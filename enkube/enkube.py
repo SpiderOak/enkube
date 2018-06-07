@@ -9,25 +9,44 @@ import pyaml
 import collections
 import pkg_resources
 
+from . import kubediff
+
 DESCRIPTION = __doc__.splitlines()[0]
 SEARCH_EXTS = ['.jsonnet']
 
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description=DESCRIPTION)
-    parser.add_argument('files', nargs='*')
+    parser.add_argument('--env', '-e')
     parser.add_argument('--search', '-J', action='append')
+    s = parser.add_subparsers()
+
+    r = s.add_parser('render', help='render manifests')
+    r.set_defaults(cmd=cmd_render, finalize_opts=finalize_opts_render)
+    r.add_argument('files', nargs='*')
+
+    d = s.add_parser('diff')
+    kubediff.init_parser(d)
 
     opts = parser.parse_args(args)
 
-    if not opts.files:
-        opts.files = ['manifests']
-
     if not opts.search:
         opts.search = []
-    opts.search.append(os.getcwd())
+
+    cwd = os.getcwd()
+    opts.search.append(cwd)
+
+    if opts.env:
+        opts.search.append(os.path.join(cwd, 'envs', opts.env))
+
+    opts.finalize_opts(opts)
 
     return opts
+
+
+def finalize_opts_render(opts):
+    if not opts.files:
+        opts.files = ['manifests']
 
 
 def find_files(paths, explicit=False):
@@ -79,9 +98,7 @@ def dump(obj):
     pyaml.dump(obj, sys.stdout, safe=True)
 
 
-def main(args=None):
-    opts = parse_args(args)
-
+def cmd_render(opts):
     for f in find_files(opts.files, True):
         with f:
             s = f.read()
@@ -94,6 +111,10 @@ def main(args=None):
         print('---\n# File: {0.name}'.format(f))
         dump(obj)
 
+
+def main(args=None):
+    opts = parse_args(args)
+    opts.cmd(opts)
     sys.exit(0)
 
 

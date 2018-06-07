@@ -5,7 +5,7 @@ setup(
     packages=['enkube'],
     entry_points={
         'console_scripts': [
-            'enkube = enkube.enkube:main'
+            'enkube = enkube.enkube:main',
         ]
     }
 )

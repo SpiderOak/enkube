@@ -23,7 +23,7 @@ Kubernetes object prototypes
   List(items):: $._Object("v1", "List") {
     items: items,
     map(f):: self + { items: std.map(f, super.items) },
-    ns(ns):: self.map(function(i) if std.objectHas(i, "ns") then i.ns(ns) else i),
+    ns(ns):: self.map(function(i) if std.objectHasAll(i, "ns") then i.ns(ns) else i),
   },
 
   /*
@@ -58,14 +58,7 @@ Kubernetes object prototypes
       name: The name of the Role.
       rules: A list of PolicyRules.
   */
-  Role(name, rules):: $._Object("rbac.authorization.k8s.io/v1", "Role", name) {
-    rules: rules,
-    roleRef:: {
-      apiGroup: std.splitLimit(self.apiVersion, "/", 1)[0],
-      kind: self.kind,
-      name: self.name,
-    },
-  },
+  Role(name, rules):: $._Object("rbac.authorization.k8s.io/v1", "Role", name) { rules: rules },
 
   /*
     ClusterRole
@@ -92,12 +85,16 @@ Kubernetes object prototypes
 
     Required arguments:
       name: The RoleBinding name.
-      role: The Role object to bind to.
+      role: The name of the Role to bind to.
       subjects: A list of subjects to bind to the Role.
   */
   RoleBinding(name, role, subjects)::
     $._Object("rbac.authorization.k8s.io/v1", "RoleBinding", name) {
-      roleRef: role.roleRef,
+      roleRef: {
+        apiGroup: "rbac.authorization.k8s.io",
+        kind: "Role",
+        name: role,
+      },
       subjects: subjects,
     },
 
@@ -106,13 +103,69 @@ Kubernetes object prototypes
 
     Required arguments:
       name: The ClusterRoleBinding name.
-      role: The ClusterRole object to bind to.
+      role: The name of the ClusterRole to bind to.
       subjects: A list of subjects to bind to the ClusterRole.
   */
   ClusterRoleBinding(name, role, subjects)::
     $.RoleBinding(name, role, subjects) + $._NoNamespace + {
       kind: "ClusterRoleBinding",
+      roleRef+: { kind: "ClusterRole" },
     },
+
+  IPBlock(cidr, except=null):: { cidr: cidr, [if except != null then "except"]: except },
+
+  /*
+    NetworkPolicy
+
+    Required arguments:
+      name: The name of the NetworkPolicy object.
+      selector: The pod selector to associate with the NetworkPolicy.
+  */
+  NetworkPolicy(name, selector)::
+    $._Object("networking.k8s.io/v1", "NetworkPolicy", name) {
+      local s = self,
+      spec: {
+        podSelector: { matchLabels: selector },
+        policyTypes: std.prune([
+          if std.objectHas(self, "ingress") then "Ingress",
+          if std.objectHas(self, "egress") then "Egress",
+        ]),
+      },
+      ingress(rule):: self + { spec+: {
+        local i = if std.objectHas(s.spec, "ingress") then s.spec.ingress else [],
+        ingress: i + [rule { from: rule.peers }],
+      } },
+    },
+
+  NetworkPolicyRule(peers):: {
+    local s = self,
+    peers:: peers,
+    ports: [],
+    port(port, proto="TCP"):: self + { ports: s.ports + [{
+      port: port,
+      protocol: proto,
+    }] },
+  },
+
+  /*
+    Endpoints
+
+    Required arguments:
+      name: The name of the Endpoints object.
+      subsets: A list of EndpointSubsets.
+  */
+  Endpoints(name, subsets):: $._Object("v1", "Endpoints", name) { subsets: subsets },
+
+  EndpointSubset(ips):: {
+    local s = self,
+    addresses: [{ ip: i } for i in ips],
+    ports: [],
+    port(port, name=null, proto=null):: self + { ports: s.ports + [{
+      port: port,
+      [if name != null then "name"]: name,
+      [if proto != null then "protocol"]: proto,
+    }] },
+  },
 
   /*
     Service
@@ -124,6 +177,7 @@ Kubernetes object prototypes
       selector: The pod selector to associate with the service.
   */
   Service(name, selector=null):: $._Object("v1", "Service", name) {
+    local s = self,
     spec: {
       [if selector != null then "selector"]: selector,
     },
@@ -158,8 +212,8 @@ Kubernetes object prototypes
         targetPort: The target port number.
     */
     port(port, name=null, proto="TCP", nodePort=null, targetPort=null):: self + {
-      local p = if std.objectHas(super.spec, "ports") then super.spec.ports else [],
       spec+: {
+        local p = if std.objectHas(s.spec, "ports") then s.spec.ports else [],
         ports: p + [{
           protocol: proto,
           port: port,
@@ -179,29 +233,78 @@ Kubernetes object prototypes
       image: The image to run the container from.
   */
   Container(name, image):: {
+    local c = self,
     name: name,
     image: image,
-    env(env):: self + { environ: [
+
+    /*
+      Container env helper
+    */
+    env_(env):: self + { env: [
       { name: k, value: env[k] }
       for k in std.objectFields(env)
     ] },
-    ports_(ports):: self + { ports: [
-      if std.isNumber(p) then { containerPort: p } else p
-      for p in ports
-    ] },
+
+    /*
+      Container port helper
+
+      Adds a port to the container. Can be chained to add multiple ports to the
+      same container.
+
+      Required arguments:
+        port: The port number.
+
+      Optional arguments:
+        name: The name of the port.
+    */
+    port(port, name=null):: self + {
+      local p = if std.objectHas(c, "ports") then c.ports else [],
+      ports: p + [{
+        containerPort: port,
+        [if name != null then "name"]: name,
+      }],
+    },
+  },
+
+  /*
+    Pod
+
+    Required arguments:
+      name: The name of the pod.
+      containers: A list of Containers.
+
+    Optional arguments:
+      nodeSelector: Selector to limit which nodes pod will run on.
+  */
+  Pod(name, containers, nodeSelector=null)::
+    $._Object("v1", "Pod", name) +
+    $._PodSpec(containers, nodeSelector),
+
+  _PodSpec(containers, nodeSelector=null):: {
+    local s = self,
+    spec: {
+      containers: containers,
+      [if nodeSelector != null then "nodeSelector"]: nodeSelector,
+    },
+    serviceAccountName(name):: self + { spec+: { serviceAccountName: name } },
+    securityContext(ctx):: self + { spec+: { securityContext: ctx } },
+    volume(vol):: self + { spec+: {
+      local v = if std.objectHas(s.spec, "volumes") then s.spec.volumes else [],
+      volumes: v + [vol],
+    } },
   },
 
   _PodSpecTemplate(labels, containers, nodeSelector=null):: {
+    local t = self.spec.template,
     spec: {
       selector: { matchLabels: labels },
-      template: {
+      template: $._PodSpec(containers, nodeSelector) {
         metadata: { labels: labels },
-        spec: {
-          containers: containers,
-          [if nodeSelector != null then "nodeSelector"]: nodeSelector,
-        },
       },
     },
+    serviceAccountName(name):: self + { spec+: { template: t.serviceAccountName(name) } },
+    securityContext(ctx):: self + { spec+: { template: t.securityContext(ctx) } },
+    volume(vol):: self + { spec+: { template: t.volume(vol) } },
   },
 
   /*
@@ -348,8 +451,13 @@ Kubernetes object prototypes
       rules: A list of IngressRules.
   */
   IngressSpec(rules=null):: {
+    local s = self,
     backend_(serviceName, port):: self + $._IngressBackend(serviceName, port),
     [if rules != null then "rules"]: rules,
+    tls_(secretName):: self + { tls: [{
+      hosts: [r.host for r in s.rules],
+      secretName: secretName,
+    }] },
   },
 
   /*
@@ -359,6 +467,7 @@ Kubernetes object prototypes
       host: The DNS hostname the rule applies to.
   */
   IngressRule(host):: {
+    local r = self,
     host: host,
     http: { paths: [] },
 
@@ -376,8 +485,7 @@ Kubernetes object prototypes
         path: The URL path to "mount" the backend to.
     */
     backend(serviceName, port, path=null):: self + {
-      local h = super.http,
-      http+: { paths: h.paths + [
+      http+: { paths: r.http.paths + [
         $._IngressBackend(serviceName, port) + if path == null then {} else { path: path },
       ] },
     },
