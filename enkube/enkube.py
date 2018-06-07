@@ -8,31 +8,32 @@ import _jsonnet
 import pyaml
 import collections
 import pkg_resources
+import subprocess
 
-from . import kubediff
-from . import kubectl
+from .kubediff import DiffCommand
+from .kubectl import CtlCommand
 
-DESCRIPTION = __doc__.splitlines()[0]
+DESCRIPTION = __doc__
 SEARCH_EXTS = ['.jsonnet']
 
 
-def parse_args(args=None):
+def main(args=None):
     parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument('--env', '-e')
     parser.add_argument('--search', '-J', action='append')
-    s = parser.add_subparsers()
+    sp = parser.add_subparsers()
 
-    r = s.add_parser('render', help='render manifests')
-    r.set_defaults(cmd=cmd_render, finalize_opts=finalize_opts_render)
-    r.add_argument('files', nargs='*')
+    plugins = {}
+    for ep in pkg_resources.iter_entry_points('enkube.commands'):
+        plugin = ep.load()
+        plugins[ep.name] = plugin(sp)
 
-    d = s.add_parser('diff')
-    kubediff.init_parser(d)
+    opts, args = parser.parse_known_args(args)
+    opts.args = args
+    opts.plugins = plugins
 
-    d = s.add_parser('ctl')
-    kubectl.init_parser(d)
-
-    opts = parser.parse_args(args)
+    if args and not getattr(opts.command, 'handles_extra_args', False):
+        parser.error('unrecognized arguments: {}'.format(' '.join(args)))
 
     if not opts.search:
         opts.search = []
@@ -43,33 +44,63 @@ def parse_args(args=None):
     if opts.env:
         opts.search.append(os.path.join(cwd, 'envs', opts.env))
 
-    opts.finalize_opts(opts)
+    opts.command.main(opts)
 
-    return opts
-
-
-def finalize_opts_render(opts):
-    if not opts.files:
-        opts.files = ['manifests']
+    sys.exit(0)
 
 
-def find_files(paths, explicit=False):
-    for p in paths:
-        if explicit and not os.path.isdir(p):
-            yield open(p)
-        else:
-            for ext in SEARCH_EXTS:
-                if p.endswith(ext) and os.path.isfile(p):
-                    yield open(p)
-            if os.path.isdir(p):
-                for f in find_files(
-                    [os.path.join(p, n) for n in sorted(os.listdir(p))]
-                ):
-                    yield f
+class RenderCommand:
+    '''Render Kubernetes manifests.
+    '''
+    _cmd = 'render'
 
+    def __init__(self, sp):
+        self._parser = sp.add_parser(self._cmd, help=self.__doc__)
+        self._parser.set_defaults(command=self)
+        self._parser.add_argument('files', nargs='*')
 
-def search_callback(opts):
-    def callback(dirname, rel):
+    def main(self, opts):
+        self.opts = opts
+        self.render(sys.stdout)
+
+    def render(self, stream):
+        if not self.opts.files:
+            self.opts.files = ['manifests']
+
+        for f in self.find_files(self.opts.files, True):
+            with f:
+                s = f.read()
+            try:
+                obj = self.render_jsonnet(f.name, s)
+            except RuntimeError as e:
+                print(e.args[0], file=sys.stderr)
+                sys.exit(1)
+
+            print('---\n# File: {0.name}'.format(f), file=stream)
+            pyaml.dump(obj, stream, safe=True)
+
+    def render_jsonnet(self, name, s):
+        s = _jsonnet.evaluate_snippet(
+            name, s,
+            import_callback=self.search_callback
+        )
+        return json.loads(s, object_pairs_hook=collections.OrderedDict)
+
+    def find_files(self, paths, explicit=False):
+        for p in paths:
+            if explicit and not os.path.isdir(p):
+                yield open(p)
+            else:
+                for ext in SEARCH_EXTS:
+                    if p.endswith(ext) and os.path.isfile(p):
+                        yield open(p)
+                if os.path.isdir(p):
+                    for f in self.find_files(
+                        [os.path.join(p, n) for n in sorted(os.listdir(p))]
+                    ):
+                        yield f
+
+    def search_callback(self, dirname, rel):
         if rel.startswith('enkube/'):
             if not rel.endswith('.libsonnet'):
                 rel += '.libsonnet'
@@ -81,7 +112,7 @@ def search_callback(opts):
             except Exception:
                 pass
 
-        for d in [dirname] + opts.search:
+        for d in [dirname] + self.opts.search:
             path = os.path.join(d, rel)
             try:
                 with open(path) as f:
@@ -89,37 +120,28 @@ def search_callback(opts):
             except FileNotFoundError:
                 continue
         raise RuntimeError('file not found')
-    return callback
 
 
-def render_jsonnet(opts, name, s):
-    s = _jsonnet.evaluate_snippet(
-        name, s, import_callback=search_callback(opts))
-    return json.loads(s, object_pairs_hook=collections.OrderedDict)
+class ApplyCommand(RenderCommand):
+    '''Render and apply Kubernetes manifests.
+    '''
+    _cmd = 'apply'
 
+    def __init__(self, sp):
+        super(ApplyCommand, self).__init__(sp)
+        self._parser.add_argument(
+            '--dry-run', action='store_true', help="don't actually apply to server")
 
-def dump(obj):
-    pyaml.dump(obj, sys.stdout, safe=True)
-
-
-def cmd_render(opts):
-    for f in find_files(opts.files, True):
-        with f:
-            s = f.read()
-        try:
-            obj = render_jsonnet(opts, f.name, s)
-        except RuntimeError as e:
-            print(e.args[0], file=sys.stderr)
-            sys.exit(1)
-
-        print('---\n# File: {0.name}'.format(f))
-        dump(obj)
-
-
-def main(args=None):
-    opts = parse_args(args)
-    opts.cmd(opts)
-    sys.exit(0)
+    def main(self, opts):
+        self.opts = opts
+        ctl = self.opts.plugins['ctl']
+        args = ['apply', '-f', '-']
+        if opts.dry_run:
+            args.append('--dry-run=true')
+        p = ctl.popen(self.opts, args, stdin=subprocess.PIPE)
+        self.render(p.stdin)
+        p.stdin.close()
+        p.wait()
 
 
 if __name__ == '__main__':

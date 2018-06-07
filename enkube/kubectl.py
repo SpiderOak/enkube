@@ -5,17 +5,22 @@ import argparse
 import subprocess
 
 
-def init_parser(parser):
-    parser.set_defaults(cmd=cmd_ctl, finalize_opts=finalize_opts_ctl)
-    parser.add_argument('args', nargs='*')
+DESCRIPTION = __doc__
 
 
-def finalize_opts_ctl(opts):
-    pass
+class CtlCommand:
+    handles_extra_args = True
 
+    def __init__(self, sp):
+        parser = sp.add_parser('ctl', help=DESCRIPTION)
+        parser.set_defaults(command=self)
 
-def cmd_ctl(opts):
-    env = os.environ.copy()
-    env['KUBECONFIG'] = 'envs/{}/.kubeconfig'.format(opts.env)
-    p = subprocess.Popen(['kubectl'] + opts.args, env=env)
-    p.wait()
+    def popen(self, opts, args, **kwargs):
+        env = os.environ.copy()
+        env['KUBECONFIG'] = 'envs/{}/.kubeconfig'.format(opts.env)
+        k = {'env': env, 'universal_newlines': True}
+        k.update(kwargs)
+        return subprocess.Popen(['kubectl'] + args, **k)
+
+    def main(self, opts):
+        self.popen(opts, opts.args).wait()
