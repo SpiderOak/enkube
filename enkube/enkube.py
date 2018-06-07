@@ -10,6 +10,7 @@ import collections
 import pkg_resources
 
 from . import kubediff
+from . import kubectl
 
 DESCRIPTION = __doc__.splitlines()[0]
 SEARCH_EXTS = ['.jsonnet']
@@ -27,6 +28,9 @@ def parse_args(args=None):
 
     d = s.add_parser('diff')
     kubediff.init_parser(d)
+
+    d = s.add_parser('ctl')
+    kubectl.init_parser(d)
 
     opts = parser.parse_args(args)
 
