@@ -9,6 +9,8 @@ import pyaml
 import collections
 import pkg_resources
 import subprocess
+import tempfile
+import shutil
 
 from .kubediff import DiffCommand
 from .kubectl import CtlCommand
@@ -138,10 +140,16 @@ class ApplyCommand(RenderCommand):
         args = ['apply', '-f', '-']
         if opts.dry_run:
             args.append('--dry-run=true')
-        p = ctl.popen(self.opts, args, stdin=subprocess.PIPE)
-        self.render(p.stdin)
-        p.stdin.close()
-        p.wait()
+
+        with tempfile.TemporaryFile('w+', encoding='utf-8') as f:
+            self.render(f)
+            f.seek(0)
+            p = ctl.popen(self.opts, args, stdin=subprocess.PIPE)
+            try:
+                shutil.copyfileobj(f, p.stdin)
+            finally:
+                p.stdin.close()
+                p.wait()
 
 
 if __name__ == '__main__':
