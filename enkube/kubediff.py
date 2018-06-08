@@ -1,11 +1,15 @@
 '''Diff Kubernetes manifests.
 '''
+import os
+import re
 import argparse
 import json
+import pyaml
 import subprocess
 import threading
 import tempfile
 import shutil
+from copy import deepcopy
 from itertools import zip_longest
 from collections import OrderedDict
 from deepdiff import DeepDiff
@@ -14,6 +18,16 @@ from .enkube import RenderCommand
 
 
 DESCRIPTION = __doc__
+EXCLUDE_PATHS = {
+    "root['metadata']['annotations']['kubectl.kubernetes.io/last-applied-configuration']",
+    "root['metadata']['creationTimestamp']",
+    "root['metadata']['generation']",
+    "root['metadata']['resourceVersion']",
+    "root['metadata']['selfLink']",
+    "root['metadata']['uid']",
+    "root['status']",
+}
+PATH_RE = re.compile(r"\[(?:'([^']+)'|(\d+))\]")
 
 
 class DiffCommand(RenderCommand):
@@ -67,7 +81,7 @@ class DiffCommand(RenderCommand):
             elif action == 'change_obj':
                 ns, k, n, d = args
                 print('Changed {} {}/{}'.format(k, ns, n))
-                print(d)
+                self.print_diff(self.oobjs[ns][k,n], self.nobjs[ns][k,n])
 
     def gather_objects_from_kubectl(self, refs):
         req = {'apiVersion': 'v1', 'kind': 'List', 'items': list(refs)}
@@ -126,7 +140,7 @@ class DiffCommand(RenderCommand):
     def diff_obj(self, ns, k, n):
         oobj = self.oobjs[ns][k,n]
         nobj = self.nobjs[ns][k,n]
-        d = DeepDiff(oobj, nobj)
+        d = DeepDiff(oobj, nobj, view='tree', exclude_paths=EXCLUDE_PATHS)
         if d:
             self.changes.append(('change_obj', (ns, k, n, d)))
 
@@ -146,3 +160,34 @@ class DiffCommand(RenderCommand):
             if n and n not in seen:
                 self.diff_obj(ns, n[0], n[1])
                 seen.add(n)
+
+    def remove_excluded_paths(self, obj):
+        root = deepcopy(obj)
+        for p in EXCLUDE_PATHS:
+            path = [(int(i) if k is None else k) for k, i in PATH_RE.findall(p)]
+            rpath = []
+            last = root
+            while path:
+                rpath.insert(0, (last, path.pop(0)))
+                try:
+                    last = last[rpath[0][-1]]
+                except (KeyError, IndexError):
+                    break
+            else:
+                for i, (o, k) in enumerate(rpath):
+                    if not i or not o[k]:
+                        del o[k]
+        return root
+
+    def print_diff(self, o1, o2):
+        files = []
+        try:
+            for o in [o1, o2]:
+                o = self.remove_excluded_paths(o)
+                with tempfile.NamedTemporaryFile('w+', delete=False) as f:
+                    files.append(f)
+                    pyaml.dump(o, f, safe=True)
+            subprocess.run(['diff', '-u'] + [f.name for f in files])
+        finally:
+            for f in files:
+                os.unlink(f.name)
