@@ -17,6 +17,11 @@ from .kubectl import CtlCommand
 
 DESCRIPTION = __doc__
 SEARCH_EXTS = ['.jsonnet']
+NO_NAMESPACE_KINDS = [
+    'Namespace',
+    'ClusterRole',
+    'ClusterRoleBinding',
+]
 
 
 def main(args=None):
@@ -59,6 +64,11 @@ class RenderCommand:
     def __init__(self, sp):
         self._parser = sp.add_parser(self._cmd, help=self.__doc__)
         self._parser.set_defaults(command=self)
+        self._parser.add_argument(
+            '--no-verify-namespace',
+            dest='verify_namespace',
+            action='store_false'
+        )
         self._parser.add_argument('files', nargs='*')
 
     def main(self, opts):
@@ -74,12 +84,26 @@ class RenderCommand:
                 s = f.read()
             try:
                 obj = self.render_jsonnet(f.name, s)
+                if self.opts.verify_namespace:
+                    self.verify_namespace(obj)
             except RuntimeError as e:
                 print(e.args[0], file=sys.stderr)
                 sys.exit(1)
 
             print('---\n# File: {0.name}'.format(f), file=stream)
             pyaml.dump(obj, stream, safe=True)
+
+    def verify_namespace(self, obj):
+        objs = [obj]
+        while objs:
+            obj = objs.pop(0)
+            if 'apiVersion' not in obj or obj['kind'] in NO_NAMESPACE_KINDS:
+                continue
+            if obj['kind'] == 'List':
+                objs.extend(obj['items'])
+                continue
+            if not obj.get('metadata', {}).get('namespace'):
+                raise RuntimeError('{} is missing namespace'.format(obj['kind']), obj)
 
     def render_jsonnet(self, name, s):
         s = _jsonnet.evaluate_snippet(
