@@ -12,8 +12,6 @@ import subprocess
 import tempfile
 import shutil
 
-from .kubediff import DiffCommand
-from .kubectl import CtlCommand
 
 DESCRIPTION = __doc__
 SEARCH_EXTS = ['.jsonnet']
@@ -69,29 +67,30 @@ class RenderCommand:
             dest='verify_namespace',
             action='store_false'
         )
-        self._parser.add_argument('files', nargs='*')
+        self._parser.add_argument('files', nargs='*', default=['manifests'])
 
     def main(self, opts):
         self.opts = opts
-        self.render(sys.stdout)
 
-    def render(self, stream):
-        if not self.opts.files:
-            self.opts.files = ['manifests']
+        try:
+            self.render_to_stream(sys.stdout)
+        except RuntimeError as e:
+            print(e.args[0], file=sys.stderr)
+            sys.exit(1)
 
+    def render_to_stream(self, stream):
+        for fname, obj in self.render():
+            print('---\n# File: {}'.format(fname), file=stream)
+            pyaml.dump(obj, stream, safe=True)
+
+    def render(self):
         for f in self.find_files(self.opts.files, True):
             with f:
                 s = f.read()
-            try:
-                obj = self.render_jsonnet(f.name, s)
-                if self.opts.verify_namespace:
-                    self.verify_namespace(obj)
-            except RuntimeError as e:
-                print(e.args[0], file=sys.stderr)
-                sys.exit(1)
-
-            print('---\n# File: {0.name}'.format(f), file=stream)
-            pyaml.dump(obj, stream, safe=True)
+            obj = self.render_jsonnet(f.name, s)
+            if self.opts.verify_namespace:
+                self.verify_namespace(obj)
+            yield f.name, obj
 
     def verify_namespace(self, obj):
         objs = [obj]

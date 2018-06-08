@@ -1,27 +1,37 @@
 '''Diff Kubernetes manifests.
 '''
 import argparse
-import yaml
+import json
+import subprocess
+import threading
+import tempfile
+import shutil
 from itertools import zip_longest
 from collections import OrderedDict
 from deepdiff import DeepDiff
+
+from .enkube import RenderCommand
 
 
 DESCRIPTION = __doc__
 
 
-class DiffCommand:
-    def __init__(self, sp):
-        parser = sp.add_parser('diff', help=DESCRIPTION)
-        parser.set_defaults(command=self)
-        parser.add_argument('file1', type=argparse.FileType('r'))
-        parser.add_argument('file2', type=argparse.FileType('r'))
+class DiffCommand(RenderCommand):
+    '''Show differences between rendered manifests and running state.
+    '''
+    _cmd = 'diff'
 
     def main(self, opts):
         self.opts = opts
 
-        self.oobjs = self.gather_objects(self.opts.file1)
-        self.nobjs = self.gather_objects(self.opts.file2)
+        try:
+            self.nobjs = self.gather_objects(o for _, o in self.render())
+        except RuntimeError as e:
+            print(e.args[0], file=sys.stderr)
+            sys.exit(1)
+
+        self.oobjs = self.gather_objects_from_kubectl(
+            self.object_refs(self.nobjs))
 
         self.changes = []
         seen = set()
@@ -59,6 +69,41 @@ class DiffCommand:
                 print('Changed {} {}/{}'.format(k, ns, n))
                 print(d)
 
+    def gather_objects_from_kubectl(self, refs):
+        req = {'apiVersion': 'v1', 'kind': 'List', 'items': list(refs)}
+        ctl = self.opts.plugins['ctl']
+        args = ['get', '-f', '-', '-o', 'json']
+        with tempfile.TemporaryFile('w+', encoding='utf-8') as f:
+            json.dump(req, f)
+            f.seek(0)
+            with ctl.popen(
+                self.opts, args,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE
+            ) as p:
+                def target():
+                    try:
+                        shutil.copyfileobj(f, p.stdin)
+                    finally:
+                        p.stdin.close()
+                t = threading.Thread(target=target)
+                t.start()
+                return self.gather_objects([
+                    json.load(p.stdout, object_pairs_hook=OrderedDict)
+                ])
+
+    def object_refs(self, objs):
+        for ns, objs in objs.items():
+            for (k, n), obj in objs.items():
+                ref = {
+                    'apiVersion': obj['apiVersion'],
+                    'kind': k,
+                    'metadata': { 'name': n },
+                }
+                if ns:
+                    ref['metadata']['namespace'] = ns
+                yield ref
+
     def flatten_lists(self, objs):
         for obj in objs:
             if obj['kind'] == 'List':
@@ -67,10 +112,10 @@ class DiffCommand:
             else:
                 yield obj
 
-    def gather_objects(self, f):
+    def gather_objects(self, items):
         objs = OrderedDict()
-        for obj in self.flatten_lists(yaml.load_all(f)):
-            ns = obj['metadata'].get('namespace')
+        for obj in self.flatten_lists(items):
+            ns = obj['metadata'].get('namespace', '')
             k = obj['kind']
             n = obj['metadata']['name']
             if ns not in objs:

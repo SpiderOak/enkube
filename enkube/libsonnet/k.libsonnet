@@ -5,11 +5,20 @@ Kubernetes object prototypes
 */
 {
   _Object(apiVersion, kind, name=null):: {
+    local s = self,
     apiVersion: apiVersion,
     kind: kind,
     [if name != null then "metadata"]: { name: name },
     ns(ns):: self + { metadata+: { namespace: ns } },
     labels(labels):: self + { metadata+: { labels: labels } },
+    ref:: {
+      apiVersion: s.apiVersion,
+      kind: s.kind,
+      metadata: {
+        name: s.metadata.name,
+        namespace: s.metadata.namespace,
+      },
+    },
   },
 
   _NoNamespace:: { ns(ns):: self },
