@@ -49,6 +49,10 @@ def main(args=None):
     if opts.env:
         opts.search.append(os.path.join(cwd, 'envs', opts.env))
 
+    if len(sys.argv)==1:
+        parser.print_help(sys.stderr)
+        sys.exit(0)
+
     opts.command.main(opts)
 
     sys.exit(0)
