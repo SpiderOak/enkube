@@ -1,4 +1,6 @@
 PyYAML
+click
+colorama
 deepdiff
 jinja2
 jsonnet

@@ -5,13 +5,13 @@ setup(
     packages=['enkube'],
     entry_points={
         'console_scripts': [
-            'enkube = enkube.enkube:main',
+            'enkube = enkube.enkube:cli',
         ],
         'enkube.commands': [
-            'render = enkube.enkube:RenderCommand',
-            'apply = enkube.enkube:ApplyCommand',
-            'diff = enkube.kubediff:DiffCommand',
-            'ctl = enkube.kubectl:CtlCommand',
+            'render = enkube.render:cli',
+            'apply = enkube.apply:cli',
+            'diff = enkube.diff:cli',
+            'ctl = enkube.ctl:cli',
         ],
     }
 )

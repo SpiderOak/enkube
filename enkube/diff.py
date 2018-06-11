@@ -1,9 +1,6 @@
-'''Diff Kubernetes manifests.
-'''
 import os
 import sys
 import re
-import argparse
 import json
 import pyaml
 import subprocess
@@ -14,11 +11,12 @@ from copy import deepcopy
 from itertools import zip_longest
 from collections import OrderedDict
 from deepdiff import DeepDiff
+import click
 
-from .enkube import RenderCommand
+from .render import pass_renderer, RenderError
+from .ctl import kubectl_popen
 
 
-DESCRIPTION = __doc__
 EXCLUDE_PATHS = {
     "root['metadata']['annotations']['deployment.kubernetes.io/revision']",
     "root['metadata']['annotations']['kubectl.kubernetes.io/last-applied-configuration']",
@@ -33,22 +31,15 @@ EXCLUDE_PATHS = {
 PATH_RE = re.compile(r"\[(?:'([^']+)'|(\d+))\]")
 
 
-class DiffCommand(RenderCommand):
-    '''Show differences between rendered manifests and running state.
-    '''
-    _cmd = 'diff'
-
-    def main(self, opts):
-        self.opts = opts
-
+class Differ:
+    def calculate_changes(self, env, rendered):
         try:
-            self.nobjs = self.gather_objects(o for _, o in self.render())
+            self.nobjs = self.gather_objects(rendered)
         except RuntimeError as e:
-            print(e.args[0], file=sys.stderr)
-            sys.exit(1)
+            raise RenderError(e.args[0])
 
         self.oobjs = self.gather_objects_from_kubectl(
-            self.object_refs(self.nobjs))
+            env, self.object_refs(self.nobjs))
 
         self.changes = []
         seen = set()
@@ -68,31 +59,14 @@ class DiffCommand(RenderCommand):
                 self.diff_ns(nns)
                 seen.add(nns)
 
-        for action, args in self.changes:
-            if action == 'add_ns':
-                print('Added namespace {} with {} objects'.format(
-                    args[0], len(self.nobjs[args[0]])))
-            elif action == 'delete_ns':
-                print('Deleted namespace {} with {} objects'.format(
-                    args[0], len(self.oobjs[args[0]])))
-            elif action == 'add_obj':
-                ns, k, n = args
-                print('Added {} {}/{}'.format(k, ns, n))
-            elif action == 'delete_obj':
-                ns, k, n = args
-                print('Deleted {} {}/{}'.format(k, ns, n))
-            elif action == 'change_obj':
-                ns, k, n, d = args
-                print('Changed {} {}/{}'.format(k, ns, n))
-                self.print_diff(self.oobjs[ns][k,n], self.nobjs[ns][k,n])
+        return self.changes
 
-    def get_namespaces_from_kubectl(self):
-        ctl = self.opts.plugins['ctl']
+    def get_namespaces_from_kubectl(self, env):
         args = [
             'get', 'namespace', '-o',
             "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}"
         ]
-        with ctl.popen(self.opts, args, stdout=subprocess.PIPE) as p:
+        with kubectl_popen(env.env, args, stdout=subprocess.PIPE) as p:
             return set(ns.rstrip('\n') for ns in p.stdout)
 
     def filter_objects_by_namespace(self, namespaces, objs):
@@ -104,20 +78,19 @@ class DiffCommand(RenderCommand):
             if ons in namespaces:
                 yield obj
 
-    def gather_objects_from_kubectl(self, refs):
-        namespaces = self.get_namespaces_from_kubectl()
+    def gather_objects_from_kubectl(self, env, refs):
+        namespaces = self.get_namespaces_from_kubectl(env)
         req = {
             'apiVersion': 'v1',
             'kind': 'List',
             'items': list(self.filter_objects_by_namespace(namespaces, refs))
         }
-        ctl = self.opts.plugins['ctl']
         args = ['get', '-f', '-', '-o', 'json']
         with tempfile.TemporaryFile('w+', encoding='utf-8') as f:
             json.dump(req, f)
             f.seek(0)
-            with ctl.popen(
-                self.opts, args,
+            with kubectl_popen(
+                env.env, args,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE
             ) as p:
@@ -196,33 +169,69 @@ class DiffCommand(RenderCommand):
                 self.diff_obj(ns, n[0], n[1])
                 seen.add(n)
 
-    def remove_excluded_paths(self, obj):
-        root = deepcopy(obj)
-        for p in EXCLUDE_PATHS:
-            path = [(int(i) if k is None else k) for k, i in PATH_RE.findall(p)]
-            rpath = []
-            last = root
-            while path:
-                rpath.insert(0, (last, path.pop(0)))
-                try:
-                    last = last[rpath[0][-1]]
-                except (KeyError, IndexError):
-                    break
-            else:
-                for i, (o, k) in enumerate(rpath):
-                    if not i or not o[k]:
-                        del o[k]
-        return root
 
-    def print_diff(self, o1, o2):
-        files = []
-        try:
-            for o in [o1, o2]:
-                o = self.remove_excluded_paths(o)
-                with tempfile.NamedTemporaryFile('w+', delete=False) as f:
-                    files.append(f)
-                    pyaml.dump(o, f, safe=True)
-            subprocess.run(['diff', '-u'] + [f.name for f in files])
-        finally:
-            for f in files:
-                os.unlink(f.name)
+def remove_excluded_paths(obj):
+    root = deepcopy(obj)
+    for p in EXCLUDE_PATHS:
+        path = [(int(i) if k is None else k) for k, i in PATH_RE.findall(p)]
+        rpath = []
+        last = root
+        while path:
+            rpath.insert(0, (last, path.pop(0)))
+            try:
+                last = last[rpath[0][-1]]
+            except (KeyError, IndexError):
+                break
+        else:
+            for i, (o, k) in enumerate(rpath):
+                if not i or not o[k]:
+                    del o[k]
+    return root
+
+
+def print_diff(o1, o2):
+    files = []
+    try:
+        for o in [o1, o2]:
+            o = remove_excluded_paths(o)
+            with tempfile.NamedTemporaryFile('w+', delete=False) as f:
+                files.append(f)
+                pyaml.dump(o, f, safe=True)
+        subprocess.run(['diff', '-u'] + [f.name for f in files])
+    finally:
+        for f in files:
+            os.unlink(f.name)
+
+
+class DiffError(click.ClickException):
+    def show(self):
+        click.secho('Error generating diff: {}'.format(self.args[0]), fg='red', err=True)
+
+
+@click.command()
+@pass_renderer
+def cli(renderer):
+    '''Show differences between rendered manifests and running state.'''
+    stdout = click.get_text_stream('stdout')
+
+    differ = Differ()
+    changes = differ.calculate_changes(
+        renderer.env, (o for _, o in renderer.render()))
+
+    for action, args in changes:
+        if action == 'add_ns':
+            click.secho('Added namespace {} with {} objects'.format(
+                args[0], len(differ.nobjs[args[0]])), fg='green')
+        elif action == 'delete_ns':
+            click.secho('Deleted namespace {} with {} objects'.format(
+                args[0], len(differ.oobjs[args[0]])), fg='red')
+        elif action == 'add_obj':
+            ns, k, n = args
+            click.secho('Added {} {}/{}'.format(k, ns, n), fg='green')
+        elif action == 'delete_obj':
+            ns, k, n = args
+            click.secho('Deleted {} {}/{}'.format(k, ns, n), fg='red')
+        elif action == 'change_obj':
+            ns, k, n, d = args
+            click.secho('Changed {} {}/{}'.format(k, ns, n), fg='yellow')
+            print_diff(differ.oobjs[ns][k,n], differ.nobjs[ns][k,n])
