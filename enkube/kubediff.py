@@ -1,6 +1,7 @@
 '''Diff Kubernetes manifests.
 '''
 import os
+import sys
 import re
 import argparse
 import json
@@ -19,12 +20,14 @@ from .enkube import RenderCommand
 
 DESCRIPTION = __doc__
 EXCLUDE_PATHS = {
+    "root['metadata']['annotations']['deployment.kubernetes.io/revision']",
     "root['metadata']['annotations']['kubectl.kubernetes.io/last-applied-configuration']",
     "root['metadata']['creationTimestamp']",
     "root['metadata']['generation']",
     "root['metadata']['resourceVersion']",
     "root['metadata']['selfLink']",
     "root['metadata']['uid']",
+    "root['spec']['template']['metadata']['creationTimestamp']",
     "root['status']",
 }
 PATH_RE = re.compile(r"\[(?:'([^']+)'|(\d+))\]")
@@ -51,17 +54,17 @@ class DiffCommand(RenderCommand):
         seen = set()
 
         for ons, nns in zip_longest(self.oobjs, self.nobjs, fillvalue=()):
-            if ons not in seen and ons not in self.nobjs:
+            if ons and ons not in seen and ons not in self.nobjs:
                 self.changes.append(('delete_ns', (ons,)))
                 seen.add(ons)
-            if nns not in seen and nns not in self.oobjs:
+            if nns and nns not in seen and nns not in self.oobjs:
                 self.changes.append(('add_ns', (nns,)))
                 seen.add(nns)
 
-            if ons not in seen:
+            if ons and ons not in seen:
                 self.diff_ns(ons)
                 seen.add(ons)
-            if nns not in seen:
+            if nns and nns not in seen:
                 self.diff_ns(nns)
                 seen.add(nns)
 
@@ -83,8 +86,31 @@ class DiffCommand(RenderCommand):
                 print('Changed {} {}/{}'.format(k, ns, n))
                 self.print_diff(self.oobjs[ns][k,n], self.nobjs[ns][k,n])
 
+    def get_namespaces_from_kubectl(self):
+        ctl = self.opts.plugins['ctl']
+        args = [
+            'get', 'namespace', '-o',
+            "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}"
+        ]
+        with ctl.popen(self.opts, args, stdout=subprocess.PIPE) as p:
+            return set(ns.rstrip('\n') for ns in p.stdout)
+
+    def filter_objects_by_namespace(self, namespaces, objs):
+        for obj in objs:
+            if obj['kind'] == 'Namespace':
+                ons = obj['metadata']['name']
+            else:
+                ons = obj['metadata'].get('namespace', 'default')
+            if ons in namespaces:
+                yield obj
+
     def gather_objects_from_kubectl(self, refs):
-        req = {'apiVersion': 'v1', 'kind': 'List', 'items': list(refs)}
+        namespaces = self.get_namespaces_from_kubectl()
+        req = {
+            'apiVersion': 'v1',
+            'kind': 'List',
+            'items': list(self.filter_objects_by_namespace(namespaces, refs))
+        }
         ctl = self.opts.plugins['ctl']
         args = ['get', '-f', '-', '-o', 'json']
         with tempfile.TemporaryFile('w+', encoding='utf-8') as f:
@@ -102,9 +128,12 @@ class DiffCommand(RenderCommand):
                         p.stdin.close()
                 t = threading.Thread(target=target)
                 t.start()
-                return self.gather_objects([
+                objs = self.gather_objects([
                     json.load(p.stdout, object_pairs_hook=OrderedDict)
                 ])
+        if p.returncode != 0:
+            sys.exit(p.returncode)
+        return objs
 
     def object_refs(self, objs):
         for ns, objs in objs.items():
@@ -147,10 +176,16 @@ class DiffCommand(RenderCommand):
     def diff_ns(self, ns):
         seen = set()
         for o, n in zip_longest(self.oobjs[ns], self.nobjs[ns]):
-            if o and o not in seen and o not in self.nobjs[ns]:
+            if (
+                o and o not in seen and o not in self.nobjs[ns]
+                and o[0] != 'Namespace'
+            ):
                 self.changes.append(('delete_obj', (ns, o[0], o[1])))
                 seen.add(o)
-            if n and n not in seen and n not in self.oobjs[ns]:
+            if (
+                n and n not in seen and n not in self.oobjs[ns]
+                and n[0] != 'Namespace'
+            ):
                 self.changes.append(('add_obj', (ns, n[0], n[1])))
                 seen.add(n)
 

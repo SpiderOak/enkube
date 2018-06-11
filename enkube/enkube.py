@@ -68,6 +68,7 @@ class RenderCommand:
             action='store_false'
         )
         self._parser.add_argument('files', nargs='*', default=['manifests'])
+        self._parser.add_argument('--exclude', action='append', default=[])
 
     def main(self, opts):
         self.opts = opts
@@ -113,6 +114,8 @@ class RenderCommand:
 
     def find_files(self, paths, explicit=False):
         for p in paths:
+            if p in self.opts.exclude:
+                continue
             if explicit and not os.path.isdir(p):
                 yield open(p)
             else:
