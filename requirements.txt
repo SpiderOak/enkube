@@ -5,3 +5,4 @@ deepdiff
 jinja2
 jsonnet
 pyaml
+pygments

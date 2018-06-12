@@ -1,9 +1,12 @@
 import os
 import tempfile
 import subprocess
+import threading
+import json
 from urllib.parse import quote
 import click
 import requests_unixsocket
+from pygments import highlight, lexers, formatters
 
 from .enkube import pass_env
 from .ctl import kubectl_popen
@@ -11,6 +14,25 @@ from .ctl import kubectl_popen
 
 class ApiClosedError(RuntimeError):
     pass
+
+
+class _Reader(threading.Thread):
+    def __init__(self, stream):
+        super(_Reader, self).__init__()
+        self.stream = stream
+        self.event = threading.Event()
+        self.start()
+
+    def run(self):
+        try:
+            for line in self.stream:
+                if line.startswith('Starting to serve'):
+                    self.event.set()
+        except Exception:
+            pass
+
+    def wait(self):
+        return self.event.wait()
 
 
 class Api:
@@ -24,7 +46,10 @@ class Api:
 
     def _popen(self):
         args = ['proxy', '-u', self._sock]
-        return kubectl_popen(self.env.env, args, stdout=subprocess.DEVNULL)
+        p = kubectl_popen(self.env.env, args, stdout=subprocess.PIPE)
+        self._reader = _Reader(p.stdout)
+        self._reader.wait()
+        return p
 
     def _construct_url(self, path):
         if self._sock is None:
@@ -35,7 +60,11 @@ class Api:
 
     def get(self, path):
         url = self._construct_url(path)
-        return self.session.get(url).json()
+        resp = self.session.get(url)
+        try:
+            return resp.json()
+        except ValueError:
+            return resp.text
 
     def close(self):
         self._sock = None
@@ -53,6 +82,18 @@ class Api:
         self.close()
 
 
+class ConsoleApi(Api):
+    def get(self, path):
+        obj = super(ConsoleApi, self).get(path)
+        if isinstance(obj, dict):
+            formatted = highlight(json.dumps(
+                obj, sort_keys=True, indent=2
+            ), lexers.JsonLexer(), formatters.TerminalFormatter())
+        else:
+            formatted = obj
+        click.echo(formatted)
+
+
 @click.command()
 @pass_env
 def cli(env):
@@ -63,6 +104,6 @@ def cli(env):
         pass
     import code
 
-    with Api(env) as api:
+    with ConsoleApi(env) as api:
         shell = code.InteractiveConsole({'api': api})
         shell.interact()
