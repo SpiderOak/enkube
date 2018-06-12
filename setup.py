@@ -12,6 +12,7 @@ setup(
             'apply = enkube.apply:cli',
             'diff = enkube.diff:cli',
             'ctl = enkube.ctl:cli',
+            'api = enkube.api:cli',
         ],
     }
 )
