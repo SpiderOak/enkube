@@ -46,7 +46,7 @@ class Api:
 
     def _popen(self):
         args = ['proxy', '-u', self._sock]
-        p = kubectl_popen(self.env.env, args, stdout=subprocess.PIPE)
+        p = kubectl_popen(self.env, args, stdout=subprocess.PIPE)
         self._reader = _Reader(p.stdout)
         self._reader.wait()
         return p

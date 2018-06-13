@@ -66,7 +66,7 @@ class Differ:
             'get', 'namespace', '-o',
             "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}"
         ]
-        with kubectl_popen(env.env, args, stdout=subprocess.PIPE) as p:
+        with kubectl_popen(env, args, stdout=subprocess.PIPE) as p:
             return set(ns.rstrip('\n') for ns in p.stdout)
 
     def filter_objects_by_namespace(self, namespaces, objs):
@@ -90,7 +90,7 @@ class Differ:
             json.dump(req, f)
             f.seek(0)
             with kubectl_popen(
-                env.env, args,
+                env, args,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE
             ) as p:

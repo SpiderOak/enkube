@@ -19,7 +19,7 @@ def cli(renderer, dry_run):
     with tempfile.TemporaryFile('w+', encoding='utf-8') as f:
         renderer.render_to_stream(f)
         f.seek(0)
-        p = kubectl_popen(renderer.env.env, args, stdin=subprocess.PIPE)
+        p = kubectl_popen(renderer.env, args, stdin=subprocess.PIPE)
         try:
             shutil.copyfileobj(f, p.stdin)
         finally:

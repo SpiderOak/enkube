@@ -7,7 +7,9 @@ from .enkube import pass_env
 
 def kubectl_popen(env, args, **kwargs):
     envvars = os.environ.copy()
-    envvars['KUBECONFIG'] = 'envs/{}/.kubeconfig'.format(env)
+    p = env.kubeconfig_path()
+    if p:
+        envvars['KUBECONFIG'] = p
     k = {'env': envvars, 'universal_newlines': True}
     k.update(kwargs)
     return subprocess.Popen(['kubectl'] + args, **k)
@@ -21,4 +23,4 @@ def kubectl_popen(env, args, **kwargs):
 @pass_env
 def cli(env, args):
     '''Wrap kubectl, setting KUBECONFIG according to selected environment.'''
-    kubectl_popen(env.env, list(args)).wait()
+    kubectl_popen(env, list(args)).wait()

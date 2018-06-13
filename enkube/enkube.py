@@ -25,14 +25,41 @@ class PluginLoaderCli(click.MultiCommand):
 
 
 class Environment:
-    def __init__(self, env=None, search=()):
-        self.env = env
+    def __init__(self, name=None, search=()):
+        self.name = name
         self.search = list(search)
+        if self.name:
+            self.envdir = os.path.join(os.getcwd(), 'envs', self.name)
+            self.parents = self._load_parents()
+        else:
+            self.envdir = None
+            self.parents = []
 
-        cwd = os.getcwd()
-        self.search.append(cwd)
-        if self.env:
-            self.search.append(os.path.join(cwd, 'envs', self.env))
+    def kubeconfig_path(self):
+        for d in self.search_dirs():
+            p = os.path.join(d, '.kubeconfig')
+            if os.path.exists(p):
+                return p
+
+    def _load_parents(self):
+        try:
+            f = open(os.path.join(self.envdir, 'parent_envs'))
+        except FileNotFoundError:
+            return []
+        with f:
+            return [type(self)(n.rstrip('\n')) for n in f]
+
+    def search_dirs(self, pre=()):
+        for d in pre:
+            yield d
+        for d in self.search:
+            yield d
+        if self.envdir:
+            yield self.envdir
+        for parent in self.parents:
+            for d in parent.search_dirs():
+                yield d
+        yield os.getcwd()
 
 
 pass_env = click.make_pass_decorator(Environment, ensure=True)

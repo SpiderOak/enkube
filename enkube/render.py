@@ -56,9 +56,7 @@ class Renderer:
 
     def render_jsonnet(self, name, s):
         s = _jsonnet.evaluate_snippet(
-            name, s,
-            import_callback=self.search_callback
-        )
+            name, s, import_callback=self.import_callback)
         return json.loads(s, object_pairs_hook=collections.OrderedDict)
 
     def find_files(self, paths, explicit=False):
@@ -77,7 +75,7 @@ class Renderer:
                     ):
                         yield f
 
-    def search_callback(self, dirname, rel):
+    def import_callback(self, dirname, rel):
         if rel.startswith('enkube/'):
             if not rel.endswith('.libsonnet'):
                 rel += '.libsonnet'
@@ -89,7 +87,7 @@ class Renderer:
             except Exception:
                 pass
 
-        for d in [dirname] + self.env.search:
+        for d in self.env.search_dirs([dirname]):
             path = os.path.join(d, rel)
             try:
                 with open(path) as f:
