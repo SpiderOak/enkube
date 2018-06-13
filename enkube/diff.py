@@ -11,6 +11,7 @@ from copy import deepcopy
 from itertools import zip_longest
 from collections import OrderedDict
 from deepdiff import DeepDiff
+from pygments import highlight, lexers, formatters
 import click
 
 from .render import pass_renderer, RenderError
@@ -191,13 +192,24 @@ def remove_excluded_paths(obj):
 
 def print_diff(o1, o2):
     files = []
+    args = ['diff', '-u']
     try:
-        for o in [o1, o2]:
+        for label, o in [('CLUSTER', o1), ('LOCAL', o2)]:
             o = remove_excluded_paths(o)
             with tempfile.NamedTemporaryFile('w+', delete=False) as f:
                 files.append(f)
                 pyaml.dump(o, f, safe=True)
-        subprocess.run(['diff', '-u'] + [f.name for f in files])
+            args.extend([
+                '--label', '{}/{} {}'.format(
+                    o['metadata'].get('namespace','<default>'),
+                    o['metadata']['name'], label
+                ),
+                f.name
+            ])
+        d = subprocess.run(args, stdout=subprocess.PIPE).stdout
+        formatted = highlight(
+            d, lexers.DiffLexer(), formatters.TerminalFormatter())
+        click.echo(formatted, nl=False)
     finally:
         for f in files:
             os.unlink(f.name)
