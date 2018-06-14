@@ -105,7 +105,7 @@ def print_name(action, args):
         click.echo('{} {}/{}'.format(k, ns, n))
 
 
-def print_change(action, args):
+def print_change(action, args, local, cluster):
     if action == 'add_ns':
         ns, = args
         click.secho('Added namespace {} with {} objects'.format(
@@ -158,6 +158,6 @@ def cli(renderer, last_applied, quiet, list_):
         if list_:
             print_name(action, args)
         else:
-            print_change(action, args)
+            print_change(action, args, local, cluster)
 
     sys.exit(int(found_changes))
