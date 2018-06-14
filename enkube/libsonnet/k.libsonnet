@@ -21,7 +21,7 @@ Kubernetes object prototypes
     },
   },
 
-  _NoNamespace:: { ns(ns):: self },
+  ClusterScoped:: { ns(ns):: self },
 
   /*
     List of Kubernetes resources
@@ -41,7 +41,7 @@ Kubernetes object prototypes
     Required arguments:
       name: The namespace name.
   */
-  Namespace(name):: $._Object("v1", "Namespace", name) + $._NoNamespace,
+  Namespace(name):: $._Object("v1", "Namespace", name) + $.ClusterScoped,
 
   /*
     ServiceAccount
@@ -76,7 +76,7 @@ Kubernetes object prototypes
       name: The name of the ClusterRole.
       rules: A list of PolicyRules.
   */
-  ClusterRole(name, rules):: $.Role(name, rules) + $._NoNamespace + {
+  ClusterRole(name, rules):: $.Role(name, rules) + $.ClusterScoped + {
     kind: "ClusterRole",
   },
 
@@ -116,7 +116,7 @@ Kubernetes object prototypes
       subjects: A list of subjects to bind to the ClusterRole.
   */
   ClusterRoleBinding(name, role, subjects)::
-    $.RoleBinding(name, role, subjects) + $._NoNamespace + {
+    $.RoleBinding(name, role, subjects) + $.ClusterScoped + {
       kind: "ClusterRoleBinding",
       roleRef+: { kind: "ClusterRole" },
     },
@@ -369,7 +369,7 @@ Kubernetes object prototypes
       accessModes: A list of access modes. Defaults to ReadWriteOnce.
   */
   LocalPersistentVolume(name, node, path, capacity, accessModes=null)::
-    $._Object("v1", "PersistentVolume", name).labels({ name: name, type: "local" }) + $._NoNamespace + {
+    $._Object("v1", "PersistentVolume", name).labels({ name: name, type: "local" }) + $.ClusterScoped + {
       spec: {
         storageClassName: "local-storage",
         capacity: { storage: capacity },

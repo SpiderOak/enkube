@@ -2,8 +2,8 @@ import os
 import json
 import _jsonnet
 import pyaml
-import collections
 import pkg_resources
+from collections import OrderedDict
 from functools import update_wrapper
 import click
 
@@ -33,11 +33,12 @@ class Renderer:
             click.secho('---\n# File: {}'.format(fname), file=stream, fg='blue')
             pyaml.dump(obj, stream, safe=True)
 
-    def render(self):
+    def render(self, object_pairs_hook=OrderedDict):
         for f in self.find_files(self.files, True):
             with f:
                 s = f.read()
-            obj = self.render_jsonnet(f.name, s)
+            obj = self.render_jsonnet(
+                f.name, s, object_pairs_hook=object_pairs_hook)
             if self.verify_namespace:
                 self.verify_object_namespace(obj)
             yield f.name, obj
@@ -54,10 +55,10 @@ class Renderer:
             if not obj.get('metadata', {}).get('namespace'):
                 raise RuntimeError('{} is missing namespace'.format(obj['kind']), obj)
 
-    def render_jsonnet(self, name, s):
+    def render_jsonnet(self, name, s, object_pairs_hook=OrderedDict):
         s = _jsonnet.evaluate_snippet(
             name, s, import_callback=self.import_callback)
-        return json.loads(s, object_pairs_hook=collections.OrderedDict)
+        return json.loads(s, object_pairs_hook=object_pairs_hook)
 
     def find_files(self, paths, explicit=False):
         for p in paths:

@@ -3,12 +3,13 @@ import tempfile
 import subprocess
 import threading
 import json
+from textwrap import indent
 from urllib.parse import quote
 import click
 import requests_unixsocket
-from pygments import highlight, lexers, formatters
 
 from .enkube import pass_env
+from .util import format_json, flatten_kube_lists
 from .ctl import kubectl_popen
 
 
@@ -40,6 +41,8 @@ class Api:
         self.env = env
         self.session = requests_unixsocket.Session()
         self.session.trust_env = False
+        self._ver_cache = {}
+        self._kind_cache = {}
         self._d = tempfile.TemporaryDirectory()
         self._sock = os.path.join(self._d.name, 'proxy.sock')
         self._p = self._popen()
@@ -66,6 +69,76 @@ class Api:
         except ValueError:
             return resp.text
 
+    def walk(self):
+        for group in self.get('/apis')['groups']:
+            v = group['preferredVersion']['groupVersion']
+            for resource in self.get('/apis/{}'.format(v))['resources']:
+                r = resource['name']
+                l = self.get('/apis/{}/{}'.format(v, r))
+                if l.get('kind', '').endswith('List'):
+                    for obj in l.get('items', []):
+                        yield obj
+
+    def last_applied(self, obj):
+        try:
+            obj = json.loads(
+                obj['metadata']['annotations'][
+                    'kubectl.kubernetes.io/last-applied-configuration'
+                ]
+            )
+        except KeyError:
+            return obj
+        if not obj['metadata']['annotations']:
+            del obj['metadata']['annotations']
+        if not self.get_resourceKind(
+            obj['apiVersion'], obj['kind']
+        )['namespaced']:
+            del obj['metadata']['namespace']
+        return obj
+
+    def get_refs(self, refs, last_applied=False):
+        for ref in flatten_kube_lists(refs):
+            obj = self.get(self.ref_to_path(ref))
+            if obj.get('code') == 404:
+                continue
+            if last_applied:
+                obj = self.last_applied(obj)
+            yield obj
+
+    def get_apiVersion(self, apiVersion):
+        if apiVersion not in self._ver_cache:
+            path = self.apiVersion_to_path(apiVersion)
+            self._ver_cache[apiVersion] = self.get(path)
+        return self._ver_cache[apiVersion]
+
+    def get_resourceKind(self, apiVersion, Kind):
+        k = (apiVersion, Kind)
+        if k not in self._kind_cache:
+            for res in self.get_apiVersion(apiVersion)['resources']:
+                if res['kind'] == Kind:
+                    self._kind_cache[k] = res
+                    break
+            else:
+                raise ValueError(
+                    'Resource kind {} not found on server.'.format(k))
+        return self._kind_cache[k]
+
+    def apiVersion_to_path(self, apiVersion):
+        if '/' in apiVersion:
+            return '/apis/{}'.format(apiVersion)
+        return '/api/{}'.format(apiVersion)
+
+    def ref_to_path(self, ref):
+        v = ref['apiVersion']
+        k = self.get_resourceKind(v, ref['kind'])
+        n = ref['metadata']['name']
+        components = [self.apiVersion_to_path(v)]
+        if k['namespaced']:
+            ns = ref['metadata']['namespace']
+            components.extend(['namespaces', ns])
+        components.extend([k['name'], n])
+        return '/'.join(components)
+
     def close(self):
         self._sock = None
         try:
@@ -86,9 +159,7 @@ class ConsoleApi(Api):
     def get(self, path):
         obj = super(ConsoleApi, self).get(path)
         if isinstance(obj, dict):
-            formatted = highlight(json.dumps(
-                obj, sort_keys=True, indent=2
-            ), lexers.JsonLexer(), formatters.TerminalFormatter())
+            formatted = format_json(obj)
         else:
             formatted = obj
         click.echo(formatted)

@@ -1,193 +1,76 @@
 import os
 import sys
-import re
-import json
 import pyaml
 import subprocess
-import threading
 import tempfile
-import shutil
-from copy import deepcopy
-from itertools import zip_longest
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from deepdiff import DeepDiff
-from pygments import highlight, lexers, formatters
 import click
 
-from .render import pass_renderer, RenderError
-from .ctl import kubectl_popen
+from .util import format_diff, flatten_kube_lists
+from .render import pass_renderer
+from .api import Api
 
 
-EXCLUDE_PATHS = {
-    "root['metadata']['annotations']['deployment.kubernetes.io/revision']",
-    "root['metadata']['annotations']['kubectl.kubernetes.io/last-applied-configuration']",
-    "root['metadata']['creationTimestamp']",
-    "root['metadata']['generation']",
-    "root['metadata']['resourceVersion']",
-    "root['metadata']['selfLink']",
-    "root['metadata']['uid']",
-    "root['spec']['template']['metadata']['creationTimestamp']",
-    "root['status']",
-}
-PATH_RE = re.compile(r"\[(?:'([^']+)'|(\d+))\]")
-
-
-class Differ:
-    def calculate_changes(self, env, rendered):
+def interleave(*iters):
+    q = deque((i, iter(i)) for i in iters)
+    while q:
+        i, ii = q.popleft()
         try:
-            self.nobjs = self.gather_objects(rendered)
-        except RuntimeError as e:
-            raise RenderError(e.args[0])
-
-        self.oobjs = self.gather_objects_from_kubectl(
-            env, self.object_refs(self.nobjs))
-
-        self.changes = []
-        seen = set()
-
-        for ons, nns in zip_longest(self.oobjs, self.nobjs, fillvalue=()):
-            if ons and ons not in seen and ons not in self.nobjs:
-                self.changes.append(('delete_ns', (ons,)))
-                seen.add(ons)
-            if nns and nns not in seen and nns not in self.oobjs:
-                self.changes.append(('add_ns', (nns,)))
-                seen.add(nns)
-
-            if ons and ons not in seen:
-                self.diff_ns(ons)
-                seen.add(ons)
-            if nns and nns not in seen:
-                self.diff_ns(nns)
-                seen.add(nns)
-
-        return self.changes
-
-    def get_namespaces_from_kubectl(self, env):
-        args = [
-            'get', 'namespace', '-o',
-            "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}"
-        ]
-        with kubectl_popen(env, args, stdout=subprocess.PIPE) as p:
-            return set(ns.rstrip('\n') for ns in p.stdout)
-
-    def filter_objects_by_namespace(self, namespaces, objs):
-        for obj in objs:
-            if obj['kind'] == 'Namespace':
-                ons = obj['metadata']['name']
-            else:
-                ons = obj['metadata'].get('namespace', 'default')
-            if ons in namespaces:
-                yield obj
-
-    def gather_objects_from_kubectl(self, env, refs):
-        namespaces = self.get_namespaces_from_kubectl(env)
-        req = {
-            'apiVersion': 'v1',
-            'kind': 'List',
-            'items': list(self.filter_objects_by_namespace(namespaces, refs))
-        }
-        args = ['get', '-f', '-', '-o', 'json']
-        with tempfile.TemporaryFile('w+', encoding='utf-8') as f:
-            json.dump(req, f)
-            f.seek(0)
-            with kubectl_popen(
-                env, args,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE
-            ) as p:
-                def target():
-                    try:
-                        shutil.copyfileobj(f, p.stdin)
-                    finally:
-                        p.stdin.close()
-                t = threading.Thread(target=target)
-                t.start()
-                objs = self.gather_objects([
-                    json.load(p.stdout, object_pairs_hook=OrderedDict)
-                ])
-        if p.returncode != 0:
-            sys.exit(p.returncode)
-        return objs
-
-    def object_refs(self, objs):
-        for ns, objs in objs.items():
-            for (k, n), obj in objs.items():
-                ref = {
-                    'apiVersion': obj['apiVersion'],
-                    'kind': k,
-                    'metadata': { 'name': n },
-                }
-                if ns:
-                    ref['metadata']['namespace'] = ns
-                yield ref
-
-    def flatten_lists(self, objs):
-        for obj in objs:
-            if obj['kind'] == 'List':
-                for obj in obj['items']:
-                    yield obj
-            else:
-                yield obj
-
-    def gather_objects(self, items):
-        objs = OrderedDict()
-        for obj in self.flatten_lists(items):
-            ns = obj['metadata'].get('namespace', '')
-            k = obj['kind']
-            n = obj['metadata']['name']
-            if ns not in objs:
-                objs[ns] = OrderedDict()
-            objs[ns][k,n] = obj
-        return objs
-
-    def diff_obj(self, ns, k, n):
-        oobj = self.oobjs[ns][k,n]
-        nobj = self.nobjs[ns][k,n]
-        d = DeepDiff(oobj, nobj, view='tree', exclude_paths=EXCLUDE_PATHS)
-        if d:
-            self.changes.append(('change_obj', (ns, k, n, d)))
-
-    def diff_ns(self, ns):
-        seen = set()
-        for o, n in zip_longest(self.oobjs[ns], self.nobjs[ns]):
-            if (
-                o and o not in seen and o not in self.nobjs[ns]
-                and o[0] != 'Namespace'
-            ):
-                self.changes.append(('delete_obj', (ns, o[0], o[1])))
-                seen.add(o)
-            if (
-                n and n not in seen and n not in self.oobjs[ns]
-                and n[0] != 'Namespace'
-            ):
-                self.changes.append(('add_obj', (ns, n[0], n[1])))
-                seen.add(n)
-
-            if o and o not in seen:
-                self.diff_obj(ns, o[0], o[1])
-                seen.add(o)
-            if n and n not in seen:
-                self.diff_obj(ns, n[0], n[1])
-                seen.add(n)
+            yield i, next(ii)
+        except StopIteration:
+            continue
+        q.append((i, ii))
 
 
-def remove_excluded_paths(obj):
-    root = deepcopy(obj)
-    for p in EXCLUDE_PATHS:
-        path = [(int(i) if k is None else k) for k, i in PATH_RE.findall(p)]
-        rpath = []
-        last = root
-        while path:
-            rpath.insert(0, (last, path.pop(0)))
-            try:
-                last = last[rpath[0][-1]]
-            except (KeyError, IndexError):
-                break
+def gather_objects(items):
+    namespaces = OrderedDict()
+    for obj in flatten_kube_lists(items):
+        ns = obj['metadata'].get('namespace')
+        k = obj['kind']
+        n = obj['metadata']['name']
+        if ns not in namespaces:
+            namespaces[ns] = OrderedDict()
+        if k == 'Namespace' and n not in namespaces:
+            namespaces[n] = OrderedDict()
+        namespaces[ns][k,n] = obj
+    return namespaces
+
+
+def calculate_changes(items1, items2):
+    seen = set()
+    for i, ns in interleave(items1, items2):
+        if ns in seen:
+            continue
+        seen.add(ns)
+        if i is items1 and ns not in items2:
+            yield ('delete_ns', (ns,))
+        elif i is items2 and ns not in items1:
+            yield ('add_ns', (ns,))
         else:
-            for i, (o, k) in enumerate(rpath):
-                if not i or not o[k]:
-                    del o[k]
-    return root
+            for d in diff_ns(ns, items1[ns], items2[ns]):
+                yield d
+
+
+def diff_ns(ns, objs1, objs2):
+    seen = set()
+    for i, (k, n) in interleave(objs1, objs2):
+        if (k, n) in seen:
+            continue
+        seen.add((k, n))
+        if i is objs1 and (k, n) not in objs2:
+            yield ('delete_obj', (ns, k, n))
+        elif i is objs2 and (k, n) not in objs1:
+            yield ('add_obj', (ns, k, n))
+        else:
+            for d in diff_obj(ns, k, n, objs1[k,n], objs2[k,n]):
+                yield d
+
+
+def diff_obj(ns, k, n, obj1, obj2):
+    d = DeepDiff(obj1, obj2, view='tree')
+    if d:
+        yield ('change_obj', (ns, k, n, d))
 
 
 def print_diff(o1, o2):
@@ -195,48 +78,57 @@ def print_diff(o1, o2):
     args = ['diff', '-u']
     try:
         for label, o in [('CLUSTER', o1), ('LOCAL', o2)]:
-            o = remove_excluded_paths(o)
             with tempfile.NamedTemporaryFile('w+', delete=False) as f:
                 files.append(f)
                 pyaml.dump(o, f, safe=True)
             args.extend([
                 '--label', '{}/{} {}'.format(
-                    o['metadata'].get('namespace','<default>'),
+                    o['metadata'].get('namespace'),
                     o['metadata']['name'], label
                 ),
                 f.name
             ])
         d = subprocess.run(args, stdout=subprocess.PIPE).stdout
-        formatted = highlight(
-            d, lexers.DiffLexer(), formatters.TerminalFormatter())
+        formatted = format_diff(d)
         click.echo(formatted, nl=False)
     finally:
         for f in files:
             os.unlink(f.name)
 
 
-class DiffError(click.ClickException):
-    def show(self):
-        click.secho('Error generating diff: {}'.format(self.args[0]), fg='red', err=True)
-
-
 @click.command()
+@click.option(
+    '--last-applied/--no-last-applied', default=True,
+    help='Compare using last-applied-configuration annotation.'
+)
+@click.option('--quiet', is_flag=True)
 @pass_renderer
-def cli(renderer):
-    '''Show differences between rendered manifests and running state.'''
+def cli(renderer, last_applied, quiet):
+    '''Show differences between rendered manifests and running state.
+
+    By default, compare to last applied configuration. Note that in this mode,
+    differences introduced imperatively by eg. `kubectl scale` will be omitted.
+    '''
     stdout = click.get_text_stream('stdout')
 
-    differ = Differ()
-    changes = differ.calculate_changes(
-        renderer.env, (o for _, o in renderer.render()))
+    rendered = [o for _, o in renderer.render(object_pairs_hook=dict)]
+    local = gather_objects(rendered)
+    with Api(renderer.env) as api:
+        cluster = gather_objects(api.get_refs(rendered, last_applied))
 
-    for action, args in changes:
+    found_changes = False
+    for action, args in calculate_changes(cluster, local):
+        found_changes = True
+        if quiet:
+            break
         if action == 'add_ns':
+            ns, = args
             click.secho('Added namespace {} with {} objects'.format(
-                args[0], len(differ.nobjs[args[0]])), fg='green')
+                ns, len(local[ns])), fg='green')
         elif action == 'delete_ns':
+            ns, = args
             click.secho('Deleted namespace {} with {} objects'.format(
-                args[0], len(differ.oobjs[args[0]])), fg='red')
+                ns, len(cluster[ns])), fg='red')
         elif action == 'add_obj':
             ns, k, n = args
             click.secho('Added {} {}/{}'.format(k, ns, n), fg='green')
@@ -246,4 +138,6 @@ def cli(renderer):
         elif action == 'change_obj':
             ns, k, n, d = args
             click.secho('Changed {} {}/{}'.format(k, ns, n), fg='yellow')
-            print_diff(differ.oobjs[ns][k,n], differ.nobjs[ns][k,n])
+            print_diff(cluster[ns][k,n], local[ns][k,n])
+
+    sys.exit(int(found_changes))
