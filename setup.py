@@ -15,6 +15,7 @@ setup(
             'api = enkube.api:cli',
             'dump = enkube.dump:cli',
             'fmt = enkube.fmt:cli',
+            'exec = enkube.exec:cli',
         ],
     }
 )

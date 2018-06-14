@@ -16,7 +16,7 @@ def format_diff(diff):
 
 def flatten_kube_lists(items):
     for obj in items:
-        if obj['kind'].endswith('List'):
+        if obj.get('kind', '').endswith('List'):
             for obj in flatten_kube_lists(obj['items']):
                 yield obj
         else:
