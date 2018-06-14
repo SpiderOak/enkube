@@ -96,14 +96,48 @@ def print_diff(o1, o2):
             os.unlink(f.name)
 
 
+def print_name(action, args):
+    if action.endswith('_ns'):
+        ns, = args
+        click.echo('Namespace {}'.format(ns))
+    elif action.endswith('_obj'):
+        ns, k, n = args[:3]
+        click.echo('{} {}/{}'.format(k, ns, n))
+
+
+def print_change(action, args):
+    if action == 'add_ns':
+        ns, = args
+        click.secho('Added namespace {} with {} objects'.format(
+            ns, len(local[ns])), fg='green')
+    elif action == 'delete_ns':
+        ns, = args
+        click.secho('Deleted namespace {} with {} objects'.format(
+            ns, len(cluster[ns])), fg='red')
+    elif action == 'add_obj':
+        ns, k, n = args
+        click.secho('Added {} {}/{}'.format(k, ns, n), fg='green')
+    elif action == 'delete_obj':
+        ns, k, n = args
+        click.secho('Deleted {} {}/{}'.format(k, ns, n), fg='red')
+    elif action == 'change_obj':
+        ns, k, n, d = args
+        click.secho('Changed {} {}/{}'.format(k, ns, n), fg='yellow')
+        print_diff(cluster[ns][k,n], local[ns][k,n])
+
+
 @click.command()
 @click.option(
     '--last-applied/--no-last-applied', default=True,
     help='Compare using last-applied-configuration annotation.'
 )
-@click.option('--quiet', is_flag=True)
+@click.option('--quiet', '-q', is_flag=True)
+@click.option(
+    '--list', '-l', 'list_', is_flag=True,
+    help='Only list names of changed objects'
+)
 @pass_renderer
-def cli(renderer, last_applied, quiet):
+def cli(renderer, last_applied, quiet, list_):
     '''Show differences between rendered manifests and running state.
 
     By default, compare to last applied configuration. Note that in this mode,
@@ -121,23 +155,9 @@ def cli(renderer, last_applied, quiet):
         found_changes = True
         if quiet:
             break
-        if action == 'add_ns':
-            ns, = args
-            click.secho('Added namespace {} with {} objects'.format(
-                ns, len(local[ns])), fg='green')
-        elif action == 'delete_ns':
-            ns, = args
-            click.secho('Deleted namespace {} with {} objects'.format(
-                ns, len(cluster[ns])), fg='red')
-        elif action == 'add_obj':
-            ns, k, n = args
-            click.secho('Added {} {}/{}'.format(k, ns, n), fg='green')
-        elif action == 'delete_obj':
-            ns, k, n = args
-            click.secho('Deleted {} {}/{}'.format(k, ns, n), fg='red')
-        elif action == 'change_obj':
-            ns, k, n, d = args
-            click.secho('Changed {} {}/{}'.format(k, ns, n), fg='yellow')
-            print_diff(cluster[ns][k,n], local[ns][k,n])
+        if list_:
+            print_name(action, args)
+        else:
+            print_change(action, args)
 
     sys.exit(int(found_changes))
