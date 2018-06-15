@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 import subprocess
 import threading
@@ -155,14 +156,17 @@ class Api:
         self.close()
 
 
-class ConsoleApi(Api):
-    def get(self, path):
-        obj = super(ConsoleApi, self).get(path)
-        if isinstance(obj, dict):
-            formatted = format_json(obj)
-        else:
-            formatted = obj
+def displayhook(value):
+    if value is None:
+        return
+    __builtins__['_'] = None
+    if isinstance(value, dict) or isinstance(value, list):
+        formatted = format_json(value)
+        click.echo(formatted, nl=False)
+    else:
+        formatted = repr(value)
         click.echo(formatted)
+    __builtins__['_'] = value
 
 
 @click.command()
@@ -175,6 +179,11 @@ def cli(env):
         pass
     import code
 
-    with ConsoleApi(env) as api:
-        shell = code.InteractiveConsole({'api': api})
-        shell.interact()
+    old_displayhook = sys.displayhook
+    sys.displayhook = displayhook
+    try:
+        with Api(env) as api:
+            shell = code.InteractiveConsole({'api': api})
+            shell.interact()
+    finally:
+        sys.displayhook = old_displayhook
