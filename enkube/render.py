@@ -1,10 +1,12 @@
 import os
+import re
 import json
 import _jsonnet
 import pyaml
 import pkg_resources
 from collections import OrderedDict
 from functools import update_wrapper
+import requests
 import click
 
 from .enkube import pass_env
@@ -16,6 +18,7 @@ NO_NAMESPACE_KINDS = [
     'ClusterRole',
     'ClusterRoleBinding',
 ]
+URL_RX = re.compile(r'https?://')
 
 
 class Renderer:
@@ -87,6 +90,13 @@ class Renderer:
                 return rel, res
             except Exception:
                 pass
+
+        if URL_RX.match(rel):
+            try:
+                res = requests.get(rel)
+                return rel, res.text
+            except Exception:
+                raise RuntimeError('error retrieving URL')
 
         for d in self.env.search_dirs([dirname]):
             path = os.path.join(d, rel)
