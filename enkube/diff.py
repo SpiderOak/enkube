@@ -99,10 +99,16 @@ def print_diff(o1, o2):
 def print_name(action, args):
     if action.endswith('_ns'):
         ns, = args
-        click.echo('Namespace {}'.format(ns))
+        line = 'Namespace {}'.format(ns)
     elif action.endswith('_obj'):
         ns, k, n = args[:3]
-        click.echo('{} {}/{}'.format(k, ns, n))
+        line = '{} {}/{}'.format(k, ns, n)
+    if action.startswith('add_'):
+        click.secho(line, fg='green')
+    elif action.startswith('delete_'):
+        click.secho(line, fg='red')
+    else:
+        click.secho(line, fg='yellow')
 
 
 def print_change(action, args, local, cluster):
