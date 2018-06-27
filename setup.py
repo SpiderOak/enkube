@@ -16,6 +16,7 @@ setup(
             'dump = enkube.dump:cli',
             'fmt = enkube.fmt:cli',
             'exec = enkube.exec:cli',
+            'gpg = enkube.gpg:cli',
         ],
     }
 )

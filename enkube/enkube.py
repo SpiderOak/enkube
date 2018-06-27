@@ -44,6 +44,14 @@ class Environment:
             if os.path.exists(p):
                 return p
 
+    def gpgsecret_keyid(self):
+        for d in self.search_dirs():
+            p = os.path.join(d, '.gpgkeyid')
+            try:
+                return open(p, 'r').read().strip()
+            except FileNotFoundError:
+                continue
+
     def _load_parents(self):
         try:
             f = open(os.path.join(self.envdir, 'parent_envs'))
