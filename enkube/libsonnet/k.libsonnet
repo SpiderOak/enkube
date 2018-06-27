@@ -301,6 +301,12 @@ Kubernetes object prototypes
       local v = if std.objectHas(s.spec, "volumes") then s.spec.volumes else [],
       volumes: v + [vol],
     } },
+    tolerateMasters():: self + { spec+: {
+      local t = if std.objectHas(s.spec, "tolerations") then s.spec.tolerations else [],
+      tolerations: t + [
+        { key: "node-role.kubernetes.io/master", operator: "Exists", effect: "NoSchedule" },
+      ],
+    } },
   },
 
   _PodSpecTemplate(labels, containers, nodeSelector=null):: {
@@ -314,6 +320,7 @@ Kubernetes object prototypes
     serviceAccountName(name):: self + { spec+: { template: t.serviceAccountName(name) } },
     securityContext(ctx):: self + { spec+: { template: t.securityContext(ctx) } },
     volume(vol):: self + { spec+: { template: t.volume(vol) } },
+    tolerateMasters():: self + { spec+: { template: t.tolerateMasters() } },
   },
 
   /*
@@ -355,6 +362,22 @@ Kubernetes object prototypes
   StatefulSet(name, serviceName, labels, containers)::
     $._Object("apps/v1", "StatefulSet", name).labels(labels) +
     $._PodSpecTemplate(labels, containers) { spec+: { serviceName: serviceName } },
+
+  /*
+    StorageClass
+
+    Required arguments:
+      name: The name of the StorageClass.
+  */
+  StorageClass(name):: $._Object("storage.k8s.io/v1", "StorageClass", name) + $.ClusterScoped,
+
+  /*
+    Local StorageClass
+  */
+  LocalStorageClass():: $.StorageClass("local-storage") {
+    provisioner: "kubernetes.io/no-provisioner",
+    volumeBindingMode: "WaitForFirstConsumer",
+  },
 
   /*
     Local PersistentVolume

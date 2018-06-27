@@ -17,6 +17,8 @@ NO_NAMESPACE_KINDS = [
     'Namespace',
     'ClusterRole',
     'ClusterRoleBinding',
+    'StorageClass',
+    'PersistentVolume',
 ]
 URL_RX = re.compile(r'https?://')
 
