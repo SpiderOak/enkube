@@ -1,12 +1,11 @@
 import os
 import sys
 import subprocess
-import yaml
-import json
+from collections import OrderedDict
 import click
 
 from .enkube import pass_env
-from .util import format_json
+from .util import format_json, load_yaml
 
 
 class GPGError(RuntimeError):
@@ -62,7 +61,7 @@ class GPG:
         elif isinstance(obj, bytes):
             return op(obj).decode('ascii')
         elif isinstance(obj, dict):
-            return dict((k, self._endecrypt_obj(op, v)) for k, v in obj.items())
+            return OrderedDict((k, self._endecrypt_obj(op, v)) for k, v in obj.items())
         elif isinstance(obj, list):
             return [self._endecrypt_obj(op, i) for i in obj]
         return obj
@@ -84,7 +83,7 @@ def cli(env, action, isjson):
 
     if isjson:
         op = getattr(gpg, '{}_object'.format(action))
-        obj = yaml.safe_load(sys.stdin)
+        obj = load_yaml(sys.stdin)
     else:
         op = getattr(gpg, action)
         obj = click.get_binary_stream('stdin')
@@ -96,5 +95,5 @@ def cli(env, action, isjson):
         sys.exit(getattr(err, 'returncode', 1))
 
     if isjson:
-        formatted = format_json(obj)
+        formatted = format_json(obj, sort_keys=False)
         click.echo(formatted, nl=False)

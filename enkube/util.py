@@ -1,10 +1,23 @@
 import json
+import yaml
+from collections import OrderedDict
 from pygments import highlight, lexers, formatters
 
 
-def format_json(obj):
+def load_yaml(stream, Loader=yaml.SafeLoader, object_pairs_hook=OrderedDict):
+    class OrderedLoader(Loader):
+        pass
+    def construct_mapping(loader, node):
+        loader.flatten_mapping(node)
+        return object_pairs_hook(loader.construct_pairs(node))
+    OrderedLoader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct_mapping)
+    return yaml.load(stream, OrderedLoader)
+
+
+def format_json(obj, sort_keys=True):
     return highlight(
-        json.dumps(obj, sort_keys=True, indent=2),
+        json.dumps(obj, sort_keys=sort_keys, indent=2),
         lexers.JsonLexer(),
         formatters.TerminalFormatter()
     )
