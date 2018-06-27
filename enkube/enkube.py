@@ -20,7 +20,10 @@ class PluginLoaderCli(click.MultiCommand):
         if '_plugins' not in self.__dict__:
             self.__dict__['_plugins'] = {}
         if name not in self._plugins:
-            self._plugins[name] = self._entrypoints[name].load()
+            try:
+                self._plugins[name] = self._entrypoints[name].load()
+            except KeyError:
+                return None
         return self._plugins[name]
 
 
