@@ -3,20 +3,20 @@ import pkg_resources
 import click
 
 
-class PluginLoaderCli(click.MultiCommand):
+class PluginLoader:
     @property
     def _entrypoints(self):
         if '_entrypoints' not in self.__dict__:
             self.__dict__['_entrypoints'] = dict(
                 (ep.name, ep) for ep in
-                pkg_resources.iter_entry_points('enkube.commands')
+                pkg_resources.iter_entry_points(self.entrypoint_type)
             )
         return self.__dict__['_entrypoints']
 
-    def list_commands(self, ctx):
+    def list(self):
         return self._entrypoints.keys()
 
-    def get_command(self, ctx, name):
+    def load(self, name):
         if '_plugins' not in self.__dict__:
             self.__dict__['_plugins'] = {}
         if name not in self._plugins:
@@ -25,6 +25,20 @@ class PluginLoaderCli(click.MultiCommand):
             except KeyError:
                 return None
         return self._plugins[name]
+
+
+class CommandPluginLoader(click.MultiCommand, PluginLoader):
+    entrypoint_type = 'enkube.commands'
+
+    def list_commands(self, ctx):
+        return self.list()
+
+    def get_command(self, ctx, name):
+        return self.load(name)
+
+
+class RenderPluginLoader(PluginLoader):
+    entrypoint_type = 'enkube.renderers'
 
 
 class Environment:
@@ -37,20 +51,8 @@ class Environment:
         else:
             self.envdir = None
             self.parents = []
-
-    def kubeconfig_path(self):
-        for d in self.search_dirs():
-            p = os.path.join(d, '.kubeconfig')
-            if os.path.exists(p):
-                return p
-
-    def gpgsecret_keyid(self):
-        for d in self.search_dirs():
-            p = os.path.join(d, '.gpgkeyid')
-            try:
-                return open(p, 'r').read().strip()
-            except FileNotFoundError:
-                continue
+        self.render_plugin_loader = RenderPluginLoader()
+        self.renderers = {}
 
     def _load_parents(self):
         try:
@@ -72,11 +74,33 @@ class Environment:
                 yield d
         yield os.getcwd()
 
+    def load_renderer(self, name):
+        if name not in self.renderers:
+            renderer = self.render_plugin_loader.load(name)(self)
+            if renderer is None:
+                return None
+            self.renderers[name] = renderer
+        return self.renderers[name]
+
+    def kubeconfig_path(self):
+        for d in self.search_dirs():
+            p = os.path.join(d, '.kubeconfig')
+            if os.path.exists(p):
+                return p
+
+    def gpgsecret_keyid(self):
+        for d in self.search_dirs():
+            p = os.path.join(d, '.gpgkeyid')
+            try:
+                return open(p, 'r').read().strip()
+            except FileNotFoundError:
+                continue
+
 
 pass_env = click.make_pass_decorator(Environment, ensure=True)
 
 
-@click.command(cls=PluginLoaderCli)
+@click.command(cls=CommandPluginLoader)
 @click.option('--env', '-e', envvar='ENKUBE_ENV')
 @click.option('--search', '-J', multiple=True, type=click.Path(), envvar='ENKUBE_SEARCH')
 @click.pass_context

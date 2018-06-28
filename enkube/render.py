@@ -5,6 +5,7 @@ import _jsonnet
 import pyaml
 import pkg_resources
 from collections import OrderedDict
+from collections.abc import Mapping
 from functools import update_wrapper
 import requests
 import click
@@ -23,9 +24,20 @@ NO_NAMESPACE_KINDS = [
 URL_RX = re.compile(r'https?://')
 
 
+def load_native_callbacks(env):
+    callbacks = {}
+    for name in env.render_plugin_loader.list():
+        renderer = env.load_renderer(name)
+        def render(template, context):
+            return renderer.render(template, json.loads(context))
+        callbacks['render/{}'.format(name)] = (('template', 'context'), render)
+    return callbacks
+
+
 class Renderer:
     def __init__(self, env, files=(), exclude=(), verify_namespace=True):
         self.env = env
+        self.native_callbacks = load_native_callbacks(self.env)
         self.files = list(files)
         self.exclude = list(exclude)
         self.verify_namespace = verify_namespace
@@ -62,7 +74,10 @@ class Renderer:
 
     def render_jsonnet(self, name, s, object_pairs_hook=OrderedDict):
         s = _jsonnet.evaluate_snippet(
-            name, s, import_callback=self.import_callback)
+            name, s,
+            import_callback=self.import_callback,
+            native_callbacks=self.native_callbacks
+        )
         return json.loads(s, object_pairs_hook=object_pairs_hook)
 
     def find_files(self, paths, explicit=False):
@@ -82,7 +97,11 @@ class Renderer:
                         yield f
 
     def import_callback(self, dirname, rel):
-        if rel.startswith('enkube/'):
+        if rel.startswith('enkube/render/'):
+            name = rel.split('/', 1)[1]
+            return rel, self._renderer_obj(name)
+
+        elif rel.startswith('enkube/'):
             if not rel.endswith('.libsonnet'):
                 rel += '.libsonnet'
             try:
@@ -108,6 +127,12 @@ class Renderer:
             except FileNotFoundError:
                 continue
         raise RuntimeError('file not found')
+
+    def _renderer_obj(self, name):
+        return '''{{
+            render(template, context)::
+                std.native("{}")(template, std.manifestJsonEx(context, " "))
+        }}'''.format(name)
 
 
 class RenderError(click.ClickException):

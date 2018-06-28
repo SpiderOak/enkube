@@ -18,5 +18,8 @@ setup(
             'exec = enkube.exec:cli',
             'gpg = enkube.gpg:cli',
         ],
+        'enkube.renderers': [
+            'jinja2 = enkube.jinja2:Renderer'
+        ],
     }
 )
