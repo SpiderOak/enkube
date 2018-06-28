@@ -24,13 +24,24 @@ NO_NAMESPACE_KINDS = [
 URL_RX = re.compile(r'https?://')
 
 
+def _json_context_wrapper(func):
+    def render(template, context):
+        return func(template, json.loads(context))
+    return render
+
+
 def load_native_callbacks(env):
     callbacks = {}
     for name in env.render_plugin_loader.list():
         renderer = env.load_renderer(name)
-        def render(template, context):
-            return renderer.render(template, json.loads(context))
-        callbacks['render/{}'.format(name)] = (('template', 'context'), render)
+        callbacks['render/{}.render'.format(name)] = (
+            ('template', 'context'),
+            _json_context_wrapper(renderer.render)
+        )
+        callbacks['render/{}.render_string'.format(name)] = (
+            ('template_string', 'context'),
+            _json_context_wrapper(renderer.render_string)
+        )
     return callbacks
 
 
@@ -131,8 +142,14 @@ class Renderer:
     def _renderer_obj(self, name):
         return '''{{
             render(template, context)::
-                std.native("{}")(template, std.manifestJsonEx(context, " "))
-        }}'''.format(name)
+              std.native("{name}.render")(
+                template, std.manifestJsonEx(context, " ")),
+            render_string(template_string, context)::
+              std.native("{name}.render_string")(
+                template_string, std.manifestJsonEx(context, " ")),
+            r:: self.render,
+            rs:: self.render_string,
+        }}'''.format(name=name)
 
 
 class RenderError(click.ClickException):
