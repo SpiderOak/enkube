@@ -539,4 +539,34 @@ Kubernetes object prototypes
       ] },
     },
   },
+
+  /*
+    HostIngress Helper
+
+    Gives you a nicer interface for creating Ingresses.
+
+    Required arguments:
+      name: The name of the Ingress.
+      hostname: The hostname the Ingress applies to.
+      class: The ingress class to use in the annotation.
+
+    Optional arguments:
+      tlsSecretName: Name of the secret containing TLS certificates.
+      annotations: Additional annotations to add.
+
+    Methods:
+      path: Add a backend to the Ingress at a given URL path.
+  */
+  HostIngress(name, hostname, class, tlsSecretName=null, annotations={})::
+    $.Ingress(name, class, $.IngressSpec([$.IngressRule(hostname)]) {
+      [if tlsSecretName != null then "tls"]: {
+        secretName: tlsSecretName,
+        hosts: [hostname],
+      },
+    }, annotations) {
+      local s = self,
+      path(path, serviceName, port):: self + { spec+: { rules: [
+        s.spec.rules[0].backend(serviceName, port, path),
+      ] } },
+    },
 }
