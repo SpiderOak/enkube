@@ -23,6 +23,10 @@ Kubernetes object prototypes
 
   ClusterScoped:: { ns(ns):: self },
 
+  applyNamespace(ns, items):: std.map(
+    function(i) if std.objectHasAll(i, "ns") then i.ns(ns) else i, items
+  ),
+
   /*
     List of Kubernetes resources
 
@@ -32,7 +36,7 @@ Kubernetes object prototypes
   List(items):: $._Object("v1", "List") {
     items: items,
     map(f):: self + { items: std.map(f, super.items) },
-    ns(ns):: self.map(function(i) if std.objectHasAll(i, "ns") then i.ns(ns) else i),
+    ns(ns):: self + { items: $.applyNamespace(ns, super.items) },
   },
 
   /*
@@ -440,6 +444,19 @@ Kubernetes object prototypes
   },
 
   /*
+    TLS Secret
+
+    Required arguments:
+      name: The name of the secret.
+      cert: The certificate in PEM format.
+      key: The private key in PEM format.
+  */
+  TLSSecret(name, cert, key):: $.Secret(name, {
+    "tls.crt": cert,
+    "tls.key": key,
+  }, "kubernetes.io/tls"),
+
+  /*
     Docker Registry Secret
 
     Required arguments:
@@ -486,8 +503,8 @@ Kubernetes object prototypes
     local s = self,
     backend_(serviceName, port):: self + $._IngressBackend(serviceName, port),
     [if rules != null then "rules"]: rules,
-    tls_(secretName):: self + { tls: [{
-      hosts: [r.host for r in s.rules],
+    tls_(secretName, hosts=null):: self + { tls: [{
+      hosts: if hosts == null then [r.host for r in s.rules] else hosts,
       secretName: secretName,
     }] },
   },

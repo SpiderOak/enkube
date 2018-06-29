@@ -1,5 +1,6 @@
 import json
 import yaml
+import pyaml
 from collections import OrderedDict
 from pygments import highlight, lexers, formatters
 
@@ -19,6 +20,14 @@ def format_json(obj, sort_keys=True):
     return highlight(
         json.dumps(obj, sort_keys=sort_keys, indent=2),
         lexers.JsonLexer(),
+        formatters.TerminalFormatter()
+    )
+
+
+def format_yaml(obj, prefix='---\n'):
+    return highlight(
+        prefix + pyaml.dumps(obj, safe=True).decode('utf-8'),
+        lexers.YamlLexer(),
         formatters.TerminalFormatter()
     )
 
