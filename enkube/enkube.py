@@ -1,4 +1,5 @@
 import os
+import json
 import pkg_resources
 import click
 
@@ -95,6 +96,16 @@ class Environment:
                 return open(p, 'r').read().strip()
             except FileNotFoundError:
                 continue
+
+    def to_dict(self):
+        return {
+            'name': self.name,
+            'dir': self.envdir,
+            'parents': [p.to_dict() for p in self.parents]
+        }
+
+    def to_json(self):
+        return json.dumps(self.to_dict())
 
 
 pass_env = click.make_pass_decorator(Environment, ensure=True)

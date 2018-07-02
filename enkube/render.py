@@ -108,7 +108,10 @@ class Renderer:
                         yield f
 
     def import_callback(self, dirname, rel):
-        if rel.startswith('enkube/render/'):
+        if rel == 'enkube/env':
+            return rel, self.env.to_json()
+
+        elif rel.startswith('enkube/render/'):
             name = rel.split('/', 1)[1]
             return rel, self._renderer_obj(name)
 

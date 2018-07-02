@@ -9,6 +9,7 @@ Kubernetes object prototypes
     apiVersion: apiVersion,
     kind: kind,
     [if name != null then "metadata"]: { name: name },
+    name(name):: self + { metadata+: { name: name } },
     ns(ns):: self + { metadata+: { namespace: ns } },
     labels(labels):: self + { metadata+: { labels: labels } },
     ref:: {
@@ -34,7 +35,7 @@ Kubernetes object prototypes
       items: A list of Kubernetes resources.
   */
   List(items):: $._Object("v1", "List") {
-    items: items,
+    items: std.filter(function(i) i != null, items),
     map(f):: self + { items: std.map(f, super.items) },
     ns(ns):: self + { items: $.applyNamespace(ns, super.items) },
   },
@@ -568,5 +569,6 @@ Kubernetes object prototypes
       path(path, serviceName, port):: self + { spec+: { rules: [
         s.spec.rules[0].backend(serviceName, port, path),
       ] } },
+      _domain:: self.spec.rules[0].host,
     },
 }
