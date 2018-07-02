@@ -560,10 +560,9 @@ Kubernetes object prototypes
   */
   HostIngress(name, hostname, class, tlsSecretName=null, annotations={})::
     $.Ingress(name, class, $.IngressSpec([$.IngressRule(hostname)]) {
-      [if tlsSecretName != null then "tls"]: {
+      [if tlsSecretName != null then "tls"]: [{
         secretName: tlsSecretName,
-        hosts: [hostname],
-      },
+      }],
     }, annotations) {
       local s = self,
       path(path, serviceName, port):: self + { spec+: { rules: [
