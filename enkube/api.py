@@ -70,16 +70,6 @@ class Api:
         except ValueError:
             return resp.text
 
-    def walk(self):
-        for group in self.get('/apis')['groups']:
-            v = group['preferredVersion']['groupVersion']
-            for resource in self.get('/apis/{}'.format(v))['resources']:
-                r = resource['name']
-                l = self.get('/apis/{}/{}'.format(v, r))
-                if l.get('kind', '').endswith('List'):
-                    for obj in l.get('items', []):
-                        yield obj
-
     def last_applied(self, obj):
         try:
             obj = json.loads(
@@ -97,14 +87,40 @@ class Api:
             del obj['metadata']['namespace']
         return obj
 
-    def get_refs(self, refs, last_applied=False):
-        for ref in flatten_kube_lists(refs):
-            obj = self.get(self.ref_to_path(ref))
-            if obj.get('code') == 404:
+    def walk(self, last_applied=False):
+        versions = self.get('/api')['versions']
+        for group in self.get('/apis')['groups']:
+            versions.extend(v['groupVersion'] for v in group['versions'])
+        for v in versions:
+            for obj in self.walk_apiVersion(v):
+                if last_applied:
+                    obj = self.last_applied(obj)
+                yield obj
+
+    def walk_apiVersion(self, apiVersion):
+        v = self.get_apiVersion(apiVersion)
+        for resource in v['resources']:
+            if 'list' not in resource['verbs']:
                 continue
-            if last_applied:
-                obj = self.last_applied(obj)
-            yield obj
+            if '/' in resource['name']:
+                continue
+            kind = resource['kind']
+            self._kind_cache[(apiVersion, kind)] = resource
+            for obj in self.list_objects(apiVersion, kind):
+                yield obj
+
+    def list_objects(self, apiVersion, kind):
+        resource = self.get_resourceKind(apiVersion, kind)
+        path = '{}/{}'.format(
+            self.apiVersion_to_path(apiVersion), resource['name'])
+        l = self.get(path)
+        if l.get('kind', '').endswith('List'):
+            for obj in l.get('items', []):
+                if 'apiVersion' not in obj:
+                    obj['apiVersion'] = apiVersion
+                if 'kind' not in obj:
+                    obj['kind'] = kind
+                yield obj
 
     def get_apiVersion(self, apiVersion):
         if apiVersion not in self._ver_cache:
@@ -112,14 +128,17 @@ class Api:
             self._ver_cache[apiVersion] = self.get(path)
         return self._ver_cache[apiVersion]
 
-    def get_resourceKind(self, apiVersion, Kind):
-        k = (apiVersion, Kind)
+    def get_resourceKind(self, apiVersion, kind):
+        k = (apiVersion, kind)
         if k not in self._kind_cache:
-            for res in self.get_apiVersion(apiVersion)['resources']:
-                if res['kind'] == Kind:
-                    self._kind_cache[k] = res
-                    break
-            else:
+            resources = [
+                r for r in self.get_apiVersion(apiVersion)['resources']
+                if r['kind'] == kind
+            ]
+            resources.sort(key=lambda r: r['name'])
+            try:
+                self._kind_cache[k] = resources[0]
+            except IndexError:
                 raise ValueError(
                     'Resource kind {} not found on server.'.format(k))
         return self._kind_cache[k]
@@ -128,6 +147,15 @@ class Api:
         if '/' in apiVersion:
             return '/apis/{}'.format(apiVersion)
         return '/api/{}'.format(apiVersion)
+
+    def get_refs(self, refs, last_applied=False):
+        for ref in flatten_kube_lists(refs):
+            obj = self.get(self.ref_to_path(ref))
+            if obj.get('code') == 404:
+                continue
+            if last_applied:
+                obj = self.last_applied(obj)
+            yield obj
 
     def ref_to_path(self, ref):
         v = ref['apiVersion']

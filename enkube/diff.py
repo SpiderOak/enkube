@@ -26,6 +26,8 @@ def interleave(*iters):
 def gather_objects(items):
     namespaces = OrderedDict()
     for obj in flatten_kube_lists(items):
+        if 'kind' not in obj:
+            continue
         ns = obj['metadata'].get('namespace')
         k = obj['kind']
         n = obj['metadata']['name']
@@ -137,13 +139,14 @@ def print_change(action, args, local, cluster):
     '--last-applied/--no-last-applied', default=True,
     help='Compare using last-applied-configuration annotation.'
 )
+@click.option('--show-deleted/--no-show-deleted', default=False)
 @click.option('--quiet', '-q', is_flag=True)
 @click.option(
     '--list', '-l', 'list_', is_flag=True,
     help='Only list names of changed objects'
 )
 @pass_renderer
-def cli(renderer, last_applied, quiet, list_):
+def cli(renderer, last_applied, show_deleted, quiet, list_):
     '''Show differences between rendered manifests and running state.
 
     By default, compare to last applied configuration. Note that in this mode,
@@ -154,7 +157,11 @@ def cli(renderer, last_applied, quiet, list_):
     rendered = [o for _, o in renderer.render(object_pairs_hook=dict)]
     local = gather_objects(rendered)
     with Api(renderer.env) as api:
-        cluster = gather_objects(api.get_refs(rendered, last_applied))
+        if show_deleted:
+            cluster = api.walk(last_applied)
+        else:
+            cluster = api.get_refs(rendered, last_applied)
+        cluster = gather_objects(cluster)
 
     found_changes = False
     for action, args in calculate_changes(cluster, local):
