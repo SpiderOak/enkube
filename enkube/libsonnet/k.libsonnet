@@ -369,6 +369,41 @@ Kubernetes object prototypes
     $._PodSpecTemplate(labels, containers) { spec+: { serviceName: serviceName } },
 
   /*
+    CronJob
+
+    Required arguments:
+      name: The name of the cron job.
+      schedule: A string in cron format specifying the job schedule.
+      containers: A list of Containers.
+
+    Optional arguments:
+      concurrencyPolicy: Specifies how to treat concurrent executions of a Job.
+  */
+  CronJob(name, schedule, containers, concurrencyPolicy=null)::
+    $._Object("batch/v1beta1", "CronJob", name) {
+      local t = self.spec.jobTemplate.spec.template,
+      spec: {
+        schedule: schedule,
+        [if concurrencyPolicy != null then "concurrencyPolicy"]: concurrencyPolicy,
+        jobTemplate: { spec: { template: $._PodSpec(containers) {
+          spec+: { restartPolicy: "OnFailure" },
+        } } },
+      },
+      serviceAccountName(name):: self + { spec+: { jobTemplate+: {
+        spec+: { template: t.serviceAccountName(name) },
+      } } },
+      securityContext(ctx):: self + { spec+: { jobTemplate+: {
+        spec+: { template: t.securityContext(ctx) },
+      } } },
+      volume(vol):: self + { spec+: { jobTemplate+: {
+        spec+: { template: t.volume(vol) },
+      } } },
+      tolerateMasters():: self + { spec+: { jobTemplate+: {
+        spec+: { template: t.tolerateMasters() },
+      } } },
+    },
+
+  /*
     StorageClass
 
     Required arguments:
