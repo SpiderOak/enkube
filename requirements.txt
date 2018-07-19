@@ -6,3 +6,4 @@ jinja2
 jsonnet
 pyaml
 pygments
+requests-unixsocket
