@@ -1,6 +1,9 @@
-# We have to use this as a base because the jsonnet package reuquires 'make' to
-# build, which blows up the image size.  Otherwise we could just use alpine
-FROM python:3.6 AS base
+# Base
+FROM python:3.6-alpine AS base
+
+# Install build tools to be able to install jsonnet
+RUN apk update && apk add --virtual build-dependencies \
+    build-base
 
 WORKDIR /app
 COPY . .
@@ -8,8 +11,16 @@ COPY . .
 # Install our packages
 RUN pip install -r requirements.txt
 
+RUN apk del build-dependencies \
+    && rm -rf /var/cache/apk/*
+
 # Enkube
-FROM python:3.6-slim
+FROM python:3.6-alpine
+
+# Needed for CPython
+RUN apk update && apk add \
+    libstdc++ && \
+    rm -rf /var/cache/apk/*
 
 WORKDIR /app
 
