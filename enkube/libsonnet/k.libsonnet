@@ -301,6 +301,10 @@ Kubernetes object prototypes
       [if nodeSelector != null then "nodeSelector"]: nodeSelector,
     },
     serviceAccountName(name):: self + { spec+: { serviceAccountName: name } },
+    imagePullSecret(name):: self + { spec+: {
+      local i = if std.objectHas(s.spec, "imagePullSecrets") then s.spec.imagePullSecrets else [],
+      imagePullSecrets: i + [{ name: name }],
+    } },
     securityContext(ctx):: self + { spec+: { securityContext: ctx } },
     volume(vol):: self + { spec+: {
       local v = if std.objectHas(s.spec, "volumes") then s.spec.volumes else [],
@@ -323,6 +327,7 @@ Kubernetes object prototypes
       },
     },
     serviceAccountName(name):: self + { spec+: { template: t.serviceAccountName(name) } },
+    imagePullSecret(name):: self + { spec+: { template: t.imagePullSecret(name) } },
     securityContext(ctx):: self + { spec+: { template: t.securityContext(ctx) } },
     volume(vol):: self + { spec+: { template: t.volume(vol) } },
     tolerateMasters():: self + { spec+: { template: t.tolerateMasters() } },
@@ -369,6 +374,26 @@ Kubernetes object prototypes
     $._PodSpecTemplate(labels, containers) { spec+: { serviceName: serviceName } },
 
   /*
+    Job
+
+    Required arguments:
+      name: The name of the job.
+      containers: A list of Containers.
+  */
+  Job(name, containers)::
+    $._Object("batch/v1", "Job", name) {
+      local t = self.spec.template,
+      spec: { template: $._PodSpec(containers) {
+        spec+: { restartPolicy: "Never" },
+      } },
+      serviceAccountName(name):: self + { spec+: { template: t.serviceAccountName(name) } },
+      imagePullSecret(name):: self + { spec+: { template: t.imagePullSecret(name) } },
+      securityContext(ctx):: self + { spec+: { template: t.securityContext(ctx) } },
+      volume(vol):: self + { spec+: { template: t.volume(vol) } },
+      tolerateMasters():: self + { spec+: { template: t.tolerateMasters() } },
+    },
+
+  /*
     CronJob
 
     Required arguments:
@@ -391,6 +416,9 @@ Kubernetes object prototypes
       },
       serviceAccountName(name):: self + { spec+: { jobTemplate+: {
         spec+: { template: t.serviceAccountName(name) },
+      } } },
+      imagePullSecret(name):: self + { spec+: { jobTemplate+: {
+        spec+: { template: t.imagePullSecret(name) },
       } } },
       securityContext(ctx):: self + { spec+: { jobTemplate+: {
         spec+: { template: t.securityContext(ctx) },
