@@ -59,8 +59,9 @@ class Api:
         if self._sock is None:
             raise ApiClosedError()
         if not path.startswith('/'):
-            path = '/{}'.format(path)
-        return 'http+unix://{}{}'.format(quote(self._sock, ''), path)
+            path = f'/{path}'
+        sock = quote(self._sock, '')
+        return f'http+unix://{sock}{path}'
 
     def get(self, path):
         url = self._construct_url(path)
@@ -69,6 +70,15 @@ class Api:
             return resp.json()
         except ValueError:
             return resp.text
+
+    def stream(self, path):
+        url = self._construct_url(path)
+        resp = self.session.get(url, stream=True)
+        for line in resp.iter_lines():
+            try:
+                yield json.loads(line)
+            except ValueError:
+                yield line
 
     def last_applied(self, obj):
         try:
@@ -109,10 +119,25 @@ class Api:
             for obj in self.list_objects(apiVersion, kind):
                 yield obj
 
-    def list_objects(self, apiVersion, kind):
-        resource = self.get_resourceKind(apiVersion, kind)
-        path = '{}/{}'.format(
-            self.apiVersion_to_path(apiVersion), resource['name'])
+    def resourceKind_to_path(
+        self, apiVersion, kind, namespace=None, verb=None
+    ):
+        k = self.get_resourceKind(apiVersion, kind)
+        if namespace is not None and not k['namespaced']:
+            raise TypeError(
+                'cannot get namespaced path to cluster-scoped resource')
+
+        components = [self.apiVersion_to_path(apiVersion)]
+        if verb is not None:
+            components.append(verb)
+        if namespace is not None:
+            components.extend(['namespaces', namespace])
+        components.append(k['name'])
+
+        return '/'.join(components)
+
+    def list_objects(self, apiVersion, kind, namespace=None):
+        path = self.resourceKind_to_path(apiVersion, kind, namespace)
         l = self.get(path)
         if l.get('kind', '').endswith('List'):
             for obj in l.get('items', []):
@@ -121,6 +146,16 @@ class Api:
                 if 'kind' not in obj:
                     obj['kind'] = kind
                 yield obj
+
+    def watch_objects(
+        self, apiVersion, kind, namespace=None, resourceVersion=None
+    ):
+        path = self.resourceKind_to_path(
+            apiVersion, kind, namespace, verb='watch')
+        if resourceVersion is not None:
+            path = f'{path}?resourceVersion={resourceVersion}'
+        for event in self.stream(path):
+            yield event['type'], event['object']
 
     def get_apiVersion(self, apiVersion):
         if apiVersion not in self._ver_cache:
@@ -139,14 +174,13 @@ class Api:
             try:
                 self._kind_cache[k] = resources[0]
             except IndexError:
-                raise ValueError(
-                    'Resource kind {} not found on server.'.format(k))
+                raise ValueError(f'Resource kind {k} not found on server.')
         return self._kind_cache[k]
 
     def apiVersion_to_path(self, apiVersion):
         if '/' in apiVersion:
-            return '/apis/{}'.format(apiVersion)
-        return '/api/{}'.format(apiVersion)
+            return f'/apis/{apiVersion}'
+        return f'/api/{apiVersion}'
 
     def get_refs(self, refs, last_applied=False):
         for ref in flatten_kube_lists(refs):
@@ -173,9 +207,10 @@ class Api:
         try:
             self._p.terminate()
             self._p.wait()
+            self._reader.join()
         finally:
             self._d.cleanup()
-        del self._p, self._d
+        del self._p, self._d, self._reader
 
     def __enter__(self):
         return self
