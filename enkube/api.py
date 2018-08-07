@@ -1,11 +1,12 @@
 import os
 import sys
+import json
 import tempfile
 import subprocess
 import threading
-import json
+from queue import Queue
 from textwrap import indent
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 import click
 import requests_unixsocket
 
@@ -37,11 +38,76 @@ class _Reader(threading.Thread):
         return self.event.wait()
 
 
+class WatchThread(threading.Thread):
+    def __init__(self, api, stop_event, event_queue, **kw):
+        super(WatchThread, self).__init__()
+        self.api = api
+        self.stop_event = stop_event
+        self.event_queue = event_queue
+        self.kw = kw.copy()
+        self.start()
+
+    def run(self):
+        try:
+            while not self.stop_event.isSet():
+                for event, obj in self.api.watch(**self.kw):
+                    self.kw['resourceVersion'] = obj['metadata']['resourceVersion']
+                    self.event_queue.put((event, obj))
+        except Exception:
+            self.event_queue.put(sys.exc_info())
+        finally:
+            self.event_queue.put(self)
+
+
+class MultiWatch:
+    def __init__(self, api, watches=()):
+        self.api = api
+        self.stop_event = threading.Event()
+        self._queue = Queue()
+        self._lock = threading.RLock()
+        self._threads = set()
+        for kw in watches:
+            self.watch(**kw)
+
+    def watch(
+        self, apiVersion, kind, namespace=None, name=None, resourceVersion=None
+    ):
+        if self.stop_event.isSet():
+            raise RuntimeError(
+                f"can't call watch on a stopped {self.__class__.__name__}")
+        kw = {
+            'apiVersion': apiVersion, 'kind': kind, 'namespace': namespace,
+            'name': name, 'resourceVersion': resourceVersion,
+        }
+        with self._lock:
+            t = WatchThread(self.api, self.stop_event, self._queue, **kw)
+            self._threads.add(t)
+
+    def stop(self):
+        self.stop_event.set()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        with self._lock:
+            while self._threads:
+                event = self._queue.get()
+                if isinstance(event, threading.Thread):
+                    self._threads.discard(event)
+                    continue
+                if len(event) == 3:
+                    raise event[0].with_traceback(event[1], event[2])
+                return event
+        raise StopIteration()
+
+
 class Api:
     def __init__(self, env):
         self.env = env
         self.session = requests_unixsocket.Session()
         self.session.trust_env = False
+        self._lock = threading.RLock()
         self._ver_cache = {}
         self._kind_cache = {}
         self._d = tempfile.TemporaryDirectory()
@@ -97,90 +163,128 @@ class Api:
             del obj['metadata']['namespace']
         return obj
 
-    def walk(self, last_applied=False):
-        versions = self.get('/api')['versions']
-        for group in self.get('/apis')['groups']:
-            versions.extend(v['groupVersion'] for v in group['versions'])
-        for v in versions:
-            for obj in self.walk_apiVersion(v):
-                if last_applied:
-                    obj = self.last_applied(obj)
-                yield obj
+    def list_apiVersions(self):
+        with self._lock:
+            if not self._ver_list:
+                self._ver_list = self.get('/api')['versions']
+                for group in self.get('/apis')['groups']:
+                    self._ver_list.extend(
+                        v['groupVersion'] for v in group['versions'])
+            return self._ver_list
 
-    def walk_apiVersion(self, apiVersion):
-        v = self.get_apiVersion(apiVersion)
-        for resource in v['resources']:
-            if 'list' not in resource['verbs']:
-                continue
-            if '/' in resource['name']:
-                continue
-            kind = resource['kind']
-            self._kind_cache[(apiVersion, kind)] = resource
-            for obj in self.list_objects(apiVersion, kind):
-                yield obj
+    def get_apiVersion(self, apiVersion):
+        with self._lock:
+            if apiVersion not in self._ver_cache:
+                path = self.build_path(apiVersion)
+                v = self._ver_cache[apiVersion] = self.get(path)
+                for r in v['resources']:
+                    k = (apiVersion, r['kind'])
+                    if k in self._kind_cache or '/' in r['name']:
+                        continue
+                    self._kind_cache[k] = r
+            return self._ver_cache[apiVersion]
 
-    def resourceKind_to_path(
-        self, apiVersion, kind, namespace=None, verb=None
+    def list_resourceKinds(self, apiVersion):
+        with self._lock:
+            self.get_apiVersion(apiVersion)
+            return sorted(k for v, k in self._kind_cache if v == apiVersion)
+
+    def get_resourceKind(self, apiVersion, kind):
+        with self._lock:
+            self.get_apiVersion(apiVersion)
+            return self._kind_cache[apiVersion, kind]
+
+    def build_path(
+        self, apiVersion, kind=None, namespace=None, name=None,
+        resourceVersion=None, verb=None
     ):
-        k = self.get_resourceKind(apiVersion, kind)
-        if namespace is not None and not k['namespaced']:
-            raise TypeError(
-                'cannot get namespaced path to cluster-scoped resource')
+        query = {}
+        components = ['']
+        if '/' in apiVersion:
+            components.append('apis')
+        else:
+            components.append('api')
+        components.append(apiVersion)
 
-        components = [self.apiVersion_to_path(apiVersion)]
         if verb is not None:
             components.append(verb)
+
         if namespace is not None:
             components.extend(['namespaces', namespace])
-        components.append(k['name'])
 
-        return '/'.join(components)
+        if kind is not None:
+            k = self.get_resourceKind(apiVersion, kind)
+            if namespace and not k['namespaced']:
+                raise TypeError(
+                    'cannot get namespaced path to cluster-scoped resource')
+            if verb and verb not in k['verbs']:
+                raise TypeError(f'{verb} not supported on {kind} resource')
+            components.append(k['name'])
 
-    def list_objects(self, apiVersion, kind, namespace=None):
-        path = self.resourceKind_to_path(apiVersion, kind, namespace)
-        l = self.get(path)
-        if l.get('kind', '').endswith('List'):
-            for obj in l.get('items', []):
-                if 'apiVersion' not in obj:
-                    obj['apiVersion'] = apiVersion
-                if 'kind' not in obj:
-                    obj['kind'] = kind
-                yield obj
+        if name is not None:
+            if kind is not None and namespace is not None:
+                components.append(name)
+            else:
+                query['fieldSelector'] = f'metadata.name={name}'
 
-    def watch_objects(
-        self, apiVersion, kind, namespace=None, resourceVersion=None
-    ):
-        path = self.resourceKind_to_path(
-            apiVersion, kind, namespace, verb='watch')
+        path = '/'.join(components)
+
         if resourceVersion is not None:
-            path = f'{path}?resourceVersion={resourceVersion}'
+            query['resourceVersion'] = resourceVersion
+
+        if query:
+            query = '&'.join(f'{k}={quote_plus(v)}' for k, v in query.items())
+            path = f'{path}?{query}'
+
+        return path
+
+    def walk(self, last_applied=False):
+        for obj in self.list():
+            if last_applied:
+                obj = self.last_applied(obj)
+            yield obj
+
+    def list(
+        self, apiVersion=None, kind=None, namespace=None,
+        name=None, resourceVersion=None
+    ):
+        if apiVersion is None:
+            versions = self.list_apiVersions()
+        else:
+            versions = [apiVersion]
+        for apiVersion in versions:
+            if kind is None:
+                kinds = self.list_resourceKinds(apiVersion)
+            else:
+                kinds = [kind]
+            for kind in kinds:
+                path = self.build_path(
+                    apiVersion, kind, namespace, name, resourceVersion)
+                res = self.get(path)
+                if res.get('kind', '').endswith('List'):
+                    for obj in res.get('items', []):
+                        yield dict(obj, apiVersion=apiVersion, kind=kind)
+                elif res.get('code') == 404:
+                    continue
+                else:
+                    yield res
+
+    def watch(
+        self, apiVersion, kind, namespace=None, name=None, resourceVersion=None
+    ):
+        path = self.build_path(
+            apiVersion, kind, namespace, name, resourceVersion, 'watch')
         for event in self.stream(path):
             yield event['type'], event['object']
 
-    def get_apiVersion(self, apiVersion):
-        if apiVersion not in self._ver_cache:
-            path = self.apiVersion_to_path(apiVersion)
-            self._ver_cache[apiVersion] = self.get(path)
-        return self._ver_cache[apiVersion]
-
-    def get_resourceKind(self, apiVersion, kind):
-        k = (apiVersion, kind)
-        if k not in self._kind_cache:
-            resources = [
-                r for r in self.get_apiVersion(apiVersion)['resources']
-                if r['kind'] == kind
-            ]
-            resources.sort(key=lambda r: r['name'])
-            try:
-                self._kind_cache[k] = resources[0]
-            except IndexError:
-                raise ValueError(f'Resource kind {k} not found on server.')
-        return self._kind_cache[k]
-
-    def apiVersion_to_path(self, apiVersion):
-        if '/' in apiVersion:
-            return f'/apis/{apiVersion}'
-        return f'/api/{apiVersion}'
+    def ref_to_path(self, ref):
+        md = ref.get('metadata', {})
+        return self.build_path(
+            ref['apiVersion'],
+            ref['kind'],
+            md.get('namespace'),
+            md.get('name')
+        )
 
     def get_refs(self, refs, last_applied=False):
         for ref in flatten_kube_lists(refs):
@@ -190,17 +294,6 @@ class Api:
             if last_applied:
                 obj = self.last_applied(obj)
             yield obj
-
-    def ref_to_path(self, ref):
-        v = ref['apiVersion']
-        k = self.get_resourceKind(v, ref['kind'])
-        n = ref['metadata']['name']
-        components = [self.apiVersion_to_path(v)]
-        if k['namespaced']:
-            ns = ref['metadata']['namespace']
-            components.extend(['namespaces', ns])
-        components.extend([k['name'], n])
-        return '/'.join(components)
 
     def close(self):
         self._sock = None
@@ -246,7 +339,11 @@ def cli(env):
     sys.displayhook = displayhook
     try:
         with Api(env) as api:
-            shell = code.InteractiveConsole({'api': api})
+            context = {
+                'api': api,
+                'MultiWatch': MultiWatch,
+            }
+            shell = code.InteractiveConsole(context)
             shell.interact()
     finally:
         sys.displayhook = old_displayhook
