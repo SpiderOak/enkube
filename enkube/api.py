@@ -4,11 +4,12 @@ import json
 import tempfile
 import subprocess
 import threading
-from queue import Queue
-from textwrap import indent
-from urllib.parse import quote, quote_plus
+import asyncio
+import functools
+from urllib.parse import quote_plus
+
 import click
-import requests_unixsocket
+import aiohttp
 
 from .enkube import pass_env
 from .util import format_json, flatten_kube_lists
@@ -38,145 +39,188 @@ class _Reader(threading.Thread):
         return self.event.wait()
 
 
-class WatchThread(threading.Thread):
-    def __init__(self, api, stop_event, event_queue, **kw):
-        super(WatchThread, self).__init__()
-        self.api = api
-        self.stop_event = stop_event
-        self.event_queue = event_queue
-        self.kw = kw.copy()
-        self.start()
-
-    def run(self):
+def sync_wrap(coro_func):
+    @functools.wraps(coro_func)
+    def wrapper(self, *args, **kwargs):
         try:
-            while not self.stop_event.isSet():
-                for event, obj in self.api.watch(**self.kw):
-                    self.kw['resourceVersion'] = obj['metadata']['resourceVersion']
-                    self.event_queue.put((event, obj))
-        except Exception:
-            self.event_queue.put(sys.exc_info())
+            return self.loop.run_until_complete(coro_func(self, *args, **kwargs))
+        except StopAsyncIteration:
+            raise StopIteration
+    return wrapper
+
+
+def sync_wrap_iter(async_gen_func):
+    @functools.wraps(async_gen_func)
+    def wrapped(self, *args, **kwargs):
+        it = async_gen_func(self, *args, **kwargs)
+        while True:
+            try:
+                yield self.loop.run_until_complete(it.__anext__())
+            except StopAsyncIteration:
+                break
+    return wrapped
+
+
+class AsyncClient:
+    def __init__(self, sock):
+        self.sock = sock
+        self.loop = asyncio.new_event_loop()
+        self.session = aiohttp.ClientSession(
+            connector=aiohttp.UnixConnector(sock, loop=self.loop))
+
+    async def get_async(self, path):
+        url = f'http://localhost{path}'
+        async with self.session.get(url) as resp:
+            return await resp.json()
+
+    get = sync_wrap(get_async)
+
+    async def stream_async(self, path):
+        url = f'http://localhost{path}'
+        async with self.session.get(url) as resp:
+            async for line in resp.content:
+                yield json.loads(line)
+
+    stream = sync_wrap_iter(stream_async)
+
+    def close(self):
+        self.loop.run_until_complete(self.session.close())
+        # lifted with minor modifications from asyncio.runners.run()
+        # https://github.com/python/cpython/blob/3.7/Lib/asyncio/runners.py
+        loop = self.loop
+        try:
+            to_cancel = asyncio.all_tasks(loop)
+            if to_cancel:
+                for task in to_cancel:
+                    task.cancel()
+                loop.run_until_complete(asyncio.gather(
+                    *to_cancel, loop=loop, return_exceptions=True))
+                for task in to_cancel:
+                    if task.cancelled():
+                        continue
+                    if task.exception() is not None:
+                        loop.call_exception_handler({
+                            'message': (
+                                f'unhandled exception during '
+                                f'{self.__class__.__name__}.close()',
+                            ),
+                            'exception': task.exception(),
+                            'task': task
+                        })
+            loop.run_until_complete(loop.shutdown_asyncgens())
         finally:
-            self.event_queue.put(self)
+            loop.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
 
 
 class MultiWatch:
     def __init__(self, api, watches=()):
         self.api = api
-        self.stop_event = threading.Event()
-        self._queue = Queue()
-        self._lock = threading.RLock()
-        self._threads = set()
+        self.queue = asyncio.Queue(1, loop=self.loop)
+        self._tasks = set()
         for kw in watches:
             self.watch(**kw)
+
+    @property
+    def loop(self):
+        return self.api.loop
+
+    async def watch_task(self, *args, **kwargs):
+        kwargs['verb'] = 'watch'
+        while True:
+            path = await self.api.build_path_async(*args, **kwargs)
+            async for event in self.api.stream_async(path):
+                try:
+                    kwargs['resourceVersion'] = \
+                        event['object']['metadata']['resourceVersion']
+                except KeyError:
+                    pass
+                await self.queue.put((event['type'], event['object']))
+                if event['type'] == 'ERROR':
+                    return
 
     def watch(
         self, apiVersion, kind, namespace=None, name=None, resourceVersion=None
     ):
-        if self.stop_event.isSet():
-            raise RuntimeError(
-                f"can't call watch on a stopped {self.__class__.__name__}")
-        kw = {
-            'apiVersion': apiVersion, 'kind': kind, 'namespace': namespace,
-            'name': name, 'resourceVersion': resourceVersion,
-        }
-        with self._lock:
-            t = WatchThread(self.api, self.stop_event, self._queue, **kw)
-            self._threads.add(t)
+        t = self.api.loop.create_task(self.watch_task(
+            apiVersion, kind, namespace, name, resourceVersion=resourceVersion
+        ))
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
 
-    def stop(self):
-        self.stop_event.set()
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await asyncio.sleep(0)  # give canceled tasks a chance to cleanup
+        if not self._tasks:
+            raise StopAsyncIteration
+        return await self.queue.get()
 
     def __iter__(self):
         return self
 
-    def __next__(self):
-        with self._lock:
-            while self._threads:
-                event = self._queue.get()
-                if isinstance(event, threading.Thread):
-                    self._threads.discard(event)
-                    continue
-                if len(event) == 3:
-                    raise event[0].with_traceback(event[1], event[2])
-                return event
-        raise StopIteration()
+    __next__ = sync_wrap(__anext__)
+
+    def cancel(self):
+        for task in self._tasks:
+            task.cancel()
 
 
 class Api:
     def __init__(self, env):
         self.env = env
-        self.session = requests_unixsocket.Session()
-        self.session.trust_env = False
         self._lock = threading.RLock()
         self._ver_cache = {}
         self._kind_cache = {}
         self._d = tempfile.TemporaryDirectory()
         self._sock = os.path.join(self._d.name, 'proxy.sock')
         self._p = self._popen()
+        self.client = AsyncClient(self._sock)
+
+    @property
+    def loop(self):
+        return self.client.loop
 
     def _popen(self):
         args = ['proxy', '-u', self._sock]
-        p = kubectl_popen(self.env, args, stdout=subprocess.PIPE)
+        p = kubectl_popen(
+            self.env, args, stdout=subprocess.PIPE, preexec_fn=os.setpgrp)
         self._reader = _Reader(p.stdout)
         self._reader.wait()
         return p
 
-    def _construct_url(self, path):
-        if self._sock is None:
-            raise ApiClosedError()
-        if not path.startswith('/'):
-            path = f'/{path}'
-        sock = quote(self._sock, '')
-        return f'http+unix://{sock}{path}'
+    def get_async(self, path):
+        return self.client.get_async(path)
 
-    def get(self, path):
-        url = self._construct_url(path)
-        resp = self.session.get(url)
-        try:
-            return resp.json()
-        except ValueError:
-            return resp.text
+    get = sync_wrap(get_async)
 
-    def stream(self, path):
-        url = self._construct_url(path)
-        resp = self.session.get(url, stream=True)
-        for line in resp.iter_lines():
-            try:
-                yield json.loads(line)
-            except ValueError:
-                yield line
+    def stream_async(self, path):
+        return self.client.stream_async(path)
 
-    def last_applied(self, obj):
-        try:
-            obj = json.loads(
-                obj['metadata']['annotations'][
-                    'kubectl.kubernetes.io/last-applied-configuration'
-                ]
-            )
-        except KeyError:
-            return obj
-        if not obj['metadata']['annotations']:
-            del obj['metadata']['annotations']
-        if not self.get_resourceKind(
-            obj['apiVersion'], obj['kind']
-        )['namespaced']:
-            del obj['metadata']['namespace']
-        return obj
+    stream = sync_wrap_iter(stream_async)
 
-    def list_apiVersions(self):
+    async def list_apiVersions_async(self):
         with self._lock:
             if not self._ver_list:
-                self._ver_list = self.get('/api')['versions']
-                for group in self.get('/apis')['groups']:
+                self._ver_list = await self.client.get_async('/api')['versions']
+                for group in (await self.client.get_async('/apis'))['groups']:
                     self._ver_list.extend(
                         v['groupVersion'] for v in group['versions'])
             return self._ver_list
 
-    def get_apiVersion(self, apiVersion):
+    list_apiVersions = sync_wrap(list_apiVersions_async)
+
+    async def get_apiVersion_async(self, apiVersion):
         with self._lock:
             if apiVersion not in self._ver_cache:
-                path = self.build_path(apiVersion)
-                v = self._ver_cache[apiVersion] = self.get(path)
+                path = await self.build_path_async(apiVersion)
+                v = self._ver_cache[apiVersion] = await self.client.get_async(path)
                 for r in v['resources']:
                     k = (apiVersion, r['kind'])
                     if k in self._kind_cache or '/' in r['name']:
@@ -184,17 +228,23 @@ class Api:
                     self._kind_cache[k] = r
             return self._ver_cache[apiVersion]
 
-    def list_resourceKinds(self, apiVersion):
+    get_apiVersion = sync_wrap(get_apiVersion_async)
+
+    async def list_resourceKinds_async(self, apiVersion):
         with self._lock:
-            self.get_apiVersion(apiVersion)
+            await self.get_apiVersion_async(apiVersion)
             return sorted(k for v, k in self._kind_cache if v == apiVersion)
 
-    def get_resourceKind(self, apiVersion, kind):
+    list_resourceKinds = sync_wrap(list_resourceKinds_async)
+
+    async def get_resourceKind_async(self, apiVersion, kind):
         with self._lock:
-            self.get_apiVersion(apiVersion)
+            await self.get_apiVersion_async(apiVersion)
             return self._kind_cache[apiVersion, kind]
 
-    def build_path(
+    get_resourceKind = sync_wrap(get_resourceKind_async)
+
+    async def build_path_async(
         self, apiVersion, kind=None, namespace=None, name=None,
         resourceVersion=None, verb=None
     ):
@@ -213,7 +263,7 @@ class Api:
             components.extend(['namespaces', namespace])
 
         if kind is not None:
-            k = self.get_resourceKind(apiVersion, kind)
+            k = await self.get_resourceKind_async(apiVersion, kind)
             if namespace and not k['namespaced']:
                 raise TypeError(
                     'cannot get namespaced path to cluster-scoped resource')
@@ -238,29 +288,25 @@ class Api:
 
         return path
 
-    def walk(self, last_applied=False):
-        for obj in self.list():
-            if last_applied:
-                obj = self.last_applied(obj)
-            yield obj
+    build_path = sync_wrap(build_path_async)
 
-    def list(
+    async def list_async(
         self, apiVersion=None, kind=None, namespace=None,
         name=None, resourceVersion=None
     ):
         if apiVersion is None:
-            versions = self.list_apiVersions()
+            versions = await self.list_apiVersions_async()
         else:
             versions = [apiVersion]
         for apiVersion in versions:
             if kind is None:
-                kinds = self.list_resourceKinds(apiVersion)
+                kinds = await self.list_resourceKinds_async(apiVersion)
             else:
                 kinds = [kind]
             for kind in kinds:
-                path = self.build_path(
+                path = await self.build_path_async(
                     apiVersion, kind, namespace, name, resourceVersion)
-                res = self.get(path)
+                res = await self.client.get_async(path)
                 if res.get('kind', '').endswith('List'):
                     for obj in res.get('items', []):
                         yield dict(obj, apiVersion=apiVersion, kind=kind)
@@ -269,13 +315,30 @@ class Api:
                 else:
                     yield res
 
-    def watch(
-        self, apiVersion, kind, namespace=None, name=None, resourceVersion=None
-    ):
-        path = self.build_path(
-            apiVersion, kind, namespace, name, resourceVersion, 'watch')
-        for event in self.stream(path):
-            yield event['type'], event['object']
+    list = sync_wrap_iter(list_async)
+
+    def last_applied(self, obj):
+        try:
+            obj = json.loads(
+                obj['metadata']['annotations'][
+                    'kubectl.kubernetes.io/last-applied-configuration'
+                ]
+            )
+        except KeyError:
+            return obj
+        if not obj['metadata']['annotations']:
+            del obj['metadata']['annotations']
+        if not self.get_resourceKind(
+            obj['apiVersion'], obj['kind']
+        )['namespaced']:
+            del obj['metadata']['namespace']
+        return obj
+
+    def walk(self, last_applied=False):
+        for obj in self.list():
+            if last_applied:
+                obj = self.last_applied(obj)
+            yield obj
 
     def ref_to_path(self, ref):
         md = ref.get('metadata', {})
@@ -296,6 +359,7 @@ class Api:
             yield obj
 
     def close(self):
+        self.client.close()
         self._sock = None
         try:
             self._p.terminate()

@@ -1,4 +1,5 @@
 PyYAML
+aiohttp
 click
 colorama
 deepdiff
@@ -6,4 +7,3 @@ jinja2
 jsonnet
 pyaml
 pygments
-requests-unixsocket
