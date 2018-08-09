@@ -2,6 +2,7 @@ import json
 import yaml
 import pyaml
 from collections import OrderedDict
+from pprint import pformat
 from pygments import highlight, lexers, formatters
 
 
@@ -34,6 +35,14 @@ def format_yaml(obj, prefix='---\n'):
 
 def format_diff(diff):
     return highlight(diff, lexers.DiffLexer(), formatters.TerminalFormatter())
+
+
+def format_python(obj):
+    return highlight(
+        pformat(obj),
+        lexers.PythonLexer(),
+        formatters.TerminalFormatter()
+    )
 
 
 def flatten_kube_lists(items):

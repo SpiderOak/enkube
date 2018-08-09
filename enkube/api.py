@@ -12,7 +12,7 @@ import click
 import aiohttp
 
 from .enkube import pass_env
-from .util import format_json, flatten_kube_lists
+from .util import format_json, format_python, flatten_kube_lists
 from .ctl import kubectl_popen
 
 
@@ -176,6 +176,7 @@ class Api:
     def __init__(self, env):
         self.env = env
         self._lock = threading.RLock()
+        self._ver_list = []
         self._ver_cache = {}
         self._kind_cache = {}
         self._d = tempfile.TemporaryDirectory()
@@ -195,21 +196,11 @@ class Api:
         self._reader.wait()
         return p
 
-    def get_async(self, path):
-        return self.client.get_async(path)
-
-    get = sync_wrap(get_async)
-
-    def stream_async(self, path):
-        return self.client.stream_async(path)
-
-    stream = sync_wrap_iter(stream_async)
-
     async def list_apiVersions_async(self):
         with self._lock:
             if not self._ver_list:
-                self._ver_list = await self.client.get_async('/api')['versions']
-                for group in (await self.client.get_async('/apis'))['groups']:
+                self._ver_list = (await self.get_async('/api'))['versions']
+                for group in (await self.get_async('/apis'))['groups']:
                     self._ver_list.extend(
                         v['groupVersion'] for v in group['versions'])
             return self._ver_list
@@ -220,7 +211,7 @@ class Api:
         with self._lock:
             if apiVersion not in self._ver_cache:
                 path = await self.build_path_async(apiVersion)
-                v = self._ver_cache[apiVersion] = await self.client.get_async(path)
+                v = self._ver_cache[apiVersion] = await self.get_async(path)
                 for r in v['resources']:
                     k = (apiVersion, r['kind'])
                     if k in self._kind_cache or '/' in r['name']:
@@ -290,9 +281,36 @@ class Api:
 
     build_path = sync_wrap(build_path_async)
 
+    async def last_applied_async(self, obj):
+        try:
+            obj = json.loads(
+                obj['metadata']['annotations'][
+                    'kubectl.kubernetes.io/last-applied-configuration'
+                ]
+            )
+        except KeyError:
+            return obj
+        if not obj['metadata']['annotations']:
+            del obj['metadata']['annotations']
+        if not (await self.get_resourceKind_async(
+            obj['apiVersion'], obj['kind']
+        ))['namespaced']:
+            del obj['metadata']['namespace']
+        return obj
+
+    last_applied = sync_wrap(last_applied_async)
+
+    async def get_async(self, path, last_applied=False):
+        obj = await self.client.get_async(path)
+        if last_applied:
+            obj = await self.last_applied_async(obj)
+        return obj
+
+    get = sync_wrap(get_async)
+
     async def list_async(
         self, apiVersion=None, kind=None, namespace=None,
-        name=None, resourceVersion=None
+        name=None, resourceVersion=None, last_applied=False
     ):
         if apiVersion is None:
             versions = await self.list_apiVersions_async()
@@ -306,10 +324,14 @@ class Api:
             for kind in kinds:
                 path = await self.build_path_async(
                     apiVersion, kind, namespace, name, resourceVersion)
-                res = await self.client.get_async(path)
+                res = await self.get_async(path, last_applied=last_applied)
                 if res.get('kind', '').endswith('List'):
                     for obj in res.get('items', []):
-                        yield dict(obj, apiVersion=apiVersion, kind=kind)
+                        if last_applied:
+                            obj = await self.last_applied_async(obj)
+                        else:
+                            obj = dict(obj, apiVersion=apiVersion, kind=kind)
+                        yield obj
                 elif res.get('code') == 404:
                     continue
                 else:
@@ -317,46 +339,36 @@ class Api:
 
     list = sync_wrap_iter(list_async)
 
-    def last_applied(self, obj):
-        try:
-            obj = json.loads(
-                obj['metadata']['annotations'][
-                    'kubectl.kubernetes.io/last-applied-configuration'
-                ]
-            )
-        except KeyError:
-            return obj
-        if not obj['metadata']['annotations']:
-            del obj['metadata']['annotations']
-        if not self.get_resourceKind(
-            obj['apiVersion'], obj['kind']
-        )['namespaced']:
-            del obj['metadata']['namespace']
-        return obj
+    def walk_async(self, last_applied=False):
+        return self.list_async(last_applied=last_applied)
 
-    def walk(self, last_applied=False):
-        for obj in self.list():
-            if last_applied:
-                obj = self.last_applied(obj)
-            yield obj
+    walk = sync_wrap_iter(walk_async)
 
-    def ref_to_path(self, ref):
+    def stream_async(self, path):
+        return self.client.stream_async(path)
+
+    stream = sync_wrap_iter(stream_async)
+
+    def ref_to_path_async(self, ref):
         md = ref.get('metadata', {})
-        return self.build_path(
+        return self.build_path_async(
             ref['apiVersion'],
             ref['kind'],
             md.get('namespace'),
             md.get('name')
         )
 
-    def get_refs(self, refs, last_applied=False):
+    ref_to_path = sync_wrap(ref_to_path_async)
+
+    async def get_refs_async(self, refs, last_applied=False):
         for ref in flatten_kube_lists(refs):
-            obj = self.get(self.ref_to_path(ref))
+            path = await self.ref_to_path_async(ref)
+            obj = await self.get_async(path, last_applied=last_applied)
             if obj.get('code') == 404:
                 continue
-            if last_applied:
-                obj = self.last_applied(obj)
             yield obj
+
+    get_refs = sync_wrap_iter(get_refs_async)
 
     def close(self):
         self.client.close()
@@ -380,12 +392,15 @@ def displayhook(value):
     if value is None:
         return
     __builtins__['_'] = None
+    formatted = None
     if isinstance(value, dict) or isinstance(value, list):
-        formatted = format_json(value)
-        click.echo(formatted, nl=False)
-    else:
-        formatted = repr(value)
-        click.echo(formatted)
+        try:
+            formatted = format_json(value)
+        except Exception:
+            pass
+    if formatted is None:
+        formatted = format_python(value)
+    click.echo(formatted, nl=False)
     __builtins__['_'] = value
 
 
