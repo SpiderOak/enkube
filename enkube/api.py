@@ -84,11 +84,13 @@ class AsyncClient:
     stream = sync_wrap_iter(stream_async)
 
     def close(self):
-        self.loop.run_until_complete(self.session.close())
+        loop = self.loop
+        if loop.is_closed():
+            return
         # lifted with minor modifications from asyncio.runners.run()
         # https://github.com/python/cpython/blob/3.7/Lib/asyncio/runners.py
-        loop = self.loop
         try:
+            loop.run_until_complete(self.session.close())
             to_cancel = asyncio.all_tasks(loop)
             if to_cancel:
                 for task in to_cancel:
@@ -131,23 +133,13 @@ class MultiWatch:
         return self.api.loop
 
     async def watch_task(self, *args, **kwargs):
-        kwargs['verb'] = 'watch'
-        while True:
-            path = await self.api.build_path_async(*args, **kwargs)
-            async for event in self.api.stream_async(path):
-                try:
-                    kwargs['resourceVersion'] = \
-                        event['object']['metadata']['resourceVersion']
-                except KeyError:
-                    pass
-                await self.queue.put((event['type'], event['object']))
-                if event['type'] == 'ERROR':
-                    return
+        async for event, obj in self.api.watch_async(*args, **kwargs):
+            await self.queue.put((event, obj))
 
     def watch(
         self, apiVersion, kind, namespace=None, name=None, resourceVersion=None
     ):
-        t = self.api.loop.create_task(self.watch_task(
+        t = self.loop.create_task(self.watch_task(
             apiVersion, kind, namespace, name, resourceVersion=resourceVersion
         ))
         self._tasks.add(t)
@@ -176,6 +168,7 @@ class Api:
     def __init__(self, env):
         self.env = env
         self._lock = threading.RLock()
+        self._closed = False
         self._ver_list = []
         self._ver_cache = {}
         self._kind_cache = {}
@@ -344,11 +337,6 @@ class Api:
 
     walk = sync_wrap_iter(walk_async)
 
-    def stream_async(self, path):
-        return self.client.stream_async(path)
-
-    stream = sync_wrap_iter(stream_async)
-
     def ref_to_path_async(self, ref):
         md = ref.get('metadata', {})
         return self.build_path_async(
@@ -370,16 +358,50 @@ class Api:
 
     get_refs = sync_wrap_iter(get_refs_async)
 
+    def stream_async(self, path):
+        return self.client.stream_async(path)
+
+    stream = sync_wrap_iter(stream_async)
+
+    async def watch_async(
+        self, apiVersion, kind, namespace=None, name=None, resourceVersion=None
+    ):
+        kw = {
+            'apiVersion': apiVersion, 'kind': kind,
+            'namespace': namespace, 'name': name,
+            'resourceVersion': resourceVersion,
+            'verb': 'watch'
+        }
+        while True:
+            path = await self.build_path_async(**kw)
+            async for event in self.stream_async(path):
+                try:
+                    kw['resourceVersion'] = \
+                        event['object']['metadata']['resourceVersion']
+                except KeyError:
+                    pass
+                yield event['type'], event['object']
+                if event['type'] == 'ERROR':
+                    return
+
+    watch = sync_wrap_iter(watch_async)
+
     def close(self):
-        self.client.close()
-        self._sock = None
-        try:
-            self._p.terminate()
-            self._p.wait()
-            self._reader.join()
-        finally:
-            self._d.cleanup()
-        del self._p, self._d, self._reader
+        if self._closed:
+            return
+        with self._lock:
+            try:
+                self.client.close()
+                self._sock = None
+                try:
+                    self._p.terminate()
+                    self._p.wait()
+                    self._reader.join()
+                finally:
+                    self._d.cleanup()
+                del self._p, self._d, self._reader
+            finally:
+                self._closed = True
 
     def __enter__(self):
         return self
