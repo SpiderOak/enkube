@@ -305,7 +305,9 @@ class Api:
             components.append(k['name'])
 
         if name is not None:
-            if kind is not None and namespace is not None:
+            if kind is not None and (
+                namespace is not None or not k['namespaced']
+            ):
                 components.append(name)
             else:
                 query['fieldSelector'] = f'metadata.name={name}'
@@ -363,16 +365,16 @@ class Api:
                 kinds = await self.list_resourceKinds_async(apiVersion)
             else:
                 kinds = [kind]
-            for kind in kinds:
+            for k in kinds:
                 path = await self.build_path_async(
-                    apiVersion, kind, namespace, name, resourceVersion)
+                    apiVersion, k, namespace, name, resourceVersion)
                 res = await self.get_async(path, last_applied=last_applied)
                 if res.get('kind', '').endswith('List'):
                     for obj in res.get('items', []):
                         if last_applied:
                             obj = await self.last_applied_async(obj)
                         else:
-                            obj = dict(obj, apiVersion=apiVersion, kind=kind)
+                            obj = dict(obj, apiVersion=apiVersion, kind=k)
                         yield obj
                 elif res.get('code') == 404:
                     continue
