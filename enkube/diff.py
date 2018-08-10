@@ -30,7 +30,7 @@ def gather_objects(items):
             continue
         ns = obj['metadata'].get('namespace')
         k = obj['kind']
-        n = obj['metadata']['name']
+        n = obj['metadata'].get('name')
         if ns not in namespaces:
             namespaces[ns] = OrderedDict()
         if k == 'Namespace' and n not in namespaces:
@@ -158,7 +158,7 @@ def cli(renderer, last_applied, show_deleted, quiet, list_):
     local = gather_objects(rendered)
     with Api(renderer.env) as api:
         if show_deleted:
-            cluster = api.walk(last_applied)
+            cluster = api.list(last_applied=last_applied)
         else:
             cluster = api.get_refs(rendered, last_applied)
         cluster = gather_objects(cluster)

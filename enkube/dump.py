@@ -10,5 +10,5 @@ from .api import Api
 def cli(env):
     '''Dump all objects from Kubernetes server.'''
     with Api(env) as api:
-        for obj in api.walk():
+        for obj in api.list():
             click.echo(format_yaml(obj))

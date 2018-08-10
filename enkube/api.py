@@ -383,11 +383,6 @@ class Api:
 
     list = sync_wrap_iter(list_async)
 
-    def walk_async(self, last_applied=False):
-        return self.list_async(last_applied=last_applied)
-
-    walk = sync_wrap_iter(walk_async)
-
     def ref_to_path_async(self, ref):
         md = ref.get('metadata', {})
         return self.build_path_async(
