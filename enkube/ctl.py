@@ -6,13 +6,10 @@ from .enkube import pass_env
 
 
 def kubectl_popen(env, args, **kwargs):
-    envvars = os.environ.copy()
-    p = env.kubeconfig_path()
-    if p:
-        envvars['KUBECONFIG'] = p
+    envvars = env.get_kubectl_environ()
     k = {'env': envvars, 'universal_newlines': True}
     k.update(kwargs)
-    return subprocess.Popen(['kubectl'] + args, **k)
+    return subprocess.Popen([env.get_kubectl_path()] + args, **k)
 
 
 @click.command(

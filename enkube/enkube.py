@@ -89,6 +89,16 @@ class Environment:
             if os.path.exists(p):
                 return p
 
+    def get_kubectl_path(self):
+        return 'kubectl'
+
+    def get_kubectl_environ(self):
+        envvars = os.environ.copy()
+        p = self.kubeconfig_path()
+        if p:
+            envvars['KUBECONFIG'] = p
+        return envvars
+
     def gpgsecret_keyid(self):
         for d in self.search_dirs():
             p = os.path.join(d, '.gpgkeyid')
