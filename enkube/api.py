@@ -189,11 +189,10 @@ class MultiWatch:
             await self.queue.put((event, obj))
 
     def watch(
-        self, apiVersion, kind, namespace=None, name=None, resourceVersion=None
+        self, apiVersion, kind, namespace=None, name=None, **kwargs
     ):
         t = self.loop.create_task(self.watch_task(
-            apiVersion, kind, namespace, name, resourceVersion=resourceVersion
-        ))
+            apiVersion, kind, namespace, name, **kwargs))
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
 
@@ -279,7 +278,7 @@ class Api:
 
     async def build_path_async(
         self, apiVersion, kind=None, namespace=None, name=None,
-        resourceVersion=None, verb=None
+        verb=None, **kwargs
     ):
         query = {}
         components = ['']
@@ -314,9 +313,7 @@ class Api:
 
         path = '/'.join(components)
 
-        if resourceVersion is not None:
-            query['resourceVersion'] = resourceVersion
-
+        query.update(kwargs)
         if query:
             query = '&'.join(f'{k}={quote_plus(v)}' for k, v in query.items())
             path = f'{path}?{query}'
@@ -354,7 +351,7 @@ class Api:
 
     async def list_async(
         self, apiVersion=None, kind=None, namespace=None,
-        name=None, resourceVersion=None, last_applied=False
+        name=None, last_applied=False, **kwargs
     ):
         if apiVersion is None:
             versions = await self.list_apiVersions_async()
@@ -367,7 +364,7 @@ class Api:
                 kinds = [kind]
             for k in kinds:
                 path = await self.build_path_async(
-                    apiVersion, k, namespace, name, resourceVersion)
+                    apiVersion, k, namespace, name, **kwargs)
                 res = await self.get_async(path, last_applied=last_applied)
                 if res.get('kind', '').endswith('List'):
                     for obj in res.get('items', []):
@@ -410,14 +407,14 @@ class Api:
     stream = sync_wrap_iter(stream_async)
 
     async def watch_async(
-        self, apiVersion, kind, namespace=None, name=None, resourceVersion=None
+        self, apiVersion, kind, namespace=None, name=None, **kwargs
     ):
         kw = {
             'apiVersion': apiVersion, 'kind': kind,
             'namespace': namespace, 'name': name,
-            'resourceVersion': resourceVersion,
             'verb': 'watch'
         }
+        kw.update(kwargs)
         while True:
             path = await self.build_path_async(**kw)
             async for event in self.stream_async(path):

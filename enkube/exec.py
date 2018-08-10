@@ -18,22 +18,17 @@ from .ctl import kubectl_popen
 @pass_env
 def cli(env, namespace, labels, args):
     '''Convenience wrapper for kubectl exec.'''
-    path = ['', 'api', 'v1']
-    if namespace:
-        path.extend(['namespaces', namespace])
-    path.append('pods?labelSelector={}'.format(quote(','.join(labels))))
-    path = '/'.join(path)
     with Api(env) as api:
-        pods = api.get(path)
+        for pod in api.list(
+            'v1', 'Pod', namespace, labelSelector=','.join(labels)
+        ):
+            if pod['status']['phase'] == 'Running':
+                podname = pod['metadata']['name']
+                break
+        else:
+            click.secho('No running pods found', fg='red')
+            sys.exit(1)
 
-    for pod in flatten_kube_lists([pods]):
-        if pod['status']['phase'] == 'Running':
-            podname = pod['metadata']['name']
-            break
-    else:
-        click.secho('No running pods found', fg='red')
-        sys.exit(1)
-
-    click.secho('Found pod {}'.format(podname), fg='cyan')
+    click.secho(f'Found pod {podname}', fg='cyan')
     args = ['-n', namespace, 'exec', podname] + list(args)
     kubectl_popen(env, args).wait()
