@@ -1,7 +1,11 @@
 import os
 import json
+import logging
 import pkg_resources
+
 import click
+
+from .log import init_logging
 
 
 class PluginLoader:
@@ -124,9 +128,11 @@ pass_env = click.make_pass_decorator(Environment, ensure=True)
 @click.command(cls=CommandPluginLoader)
 @click.option('--env', '-e', envvar='ENKUBE_ENV')
 @click.option('--search', '-J', multiple=True, type=click.Path(), envvar='ENKUBE_SEARCH')
+@click.option('-v', '--verbose', count=True)
 @click.pass_context
-def cli(ctx, env, search):
+def cli(ctx, env, search, verbose):
     '''Manage Kubernetes manifests.'''
+    init_logging(logging.WARNING - 10 * verbose)
     ctx.obj = Environment(env, search)
 
 

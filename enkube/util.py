@@ -63,7 +63,7 @@ def sync_wrap(coro_func):
         try:
             return loop.run_until_complete(coro_func(*args, **kwargs))
         except StopAsyncIteration:
-            raise StopIteration
+            raise StopIteration from None
     return wrapper
 
 
@@ -78,6 +78,16 @@ def sync_wrap_iter(async_gen_func):
             except StopAsyncIteration:
                 break
     return wrapped
+
+
+def async_gen_next_timeout(gen, timeout, loop=None):
+    if loop is None:
+        loop = asyncio.get_event_loop()
+    try:
+        return loop.run_until_complete(
+            asyncio.wait_for(gen.__anext__(), timeout))
+    except StopAsyncIteration:
+        raise StopIteration from None
 
 
 def close_event_loop(loop=None):

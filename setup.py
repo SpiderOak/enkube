@@ -17,6 +17,7 @@ setup(
             'fmt = enkube.fmt:cli',
             'exec = enkube.exec:cli',
             'gpg = enkube.gpg:cli',
+            'controller = enkube.controller:cli',
         ],
         'enkube.renderers': [
             'jinja2 = enkube.jinja2:Renderer'

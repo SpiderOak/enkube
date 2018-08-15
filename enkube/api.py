@@ -185,8 +185,11 @@ class MultiWatch:
             self.watch(**kw)
 
     async def watch_task(self, *args, **kwargs):
-        async for event, obj in self.api.watch_async(*args, **kwargs):
-            await self.queue.put((event, obj))
+        try:
+            async for event, obj in self.api.watch_async(*args, **kwargs):
+                await self.queue.put((event, obj))
+        except Exception:
+            await self.queue.put(sys.exc_info())
 
     def watch(
         self, apiVersion, kind, namespace=None, name=None, **kwargs
@@ -205,7 +208,12 @@ class MultiWatch:
 
         if not self._tasks:
             raise StopAsyncIteration
-        return await self.queue.get()
+
+        item = await self.queue.get()
+        if len(item) == 3:
+            raise item[0] from None
+
+        return item
 
     def __iter__(self):
         return self
@@ -218,6 +226,8 @@ class MultiWatch:
 
 
 class Api:
+    log = LOG.getChild('Api')
+
     def __init__(self, env, loop=None):
         self.env = env
         if loop is None:
@@ -414,18 +424,11 @@ class Api:
             'namespace': namespace, 'name': name,
             'verb': 'watch'
         }
-        kw.update(kwargs)
-        while True:
-            path = await self.build_path_async(**kw)
-            async for event in self.stream_async(path):
-                try:
-                    kw['resourceVersion'] = \
-                        event['object']['metadata']['resourceVersion']
-                except KeyError:
-                    pass
-                yield event['type'], event['object']
-                if event['type'] == 'ERROR':
-                    return
+        path = await self.build_path_async(**kw)
+        async for event in self.stream_async(path):
+            yield event['type'], event['object']
+            if event['type'] == 'ERROR':
+                return
 
     watch = sync_wrap_iter(watch_async)
 
@@ -433,11 +436,15 @@ class Api:
         if self._closed:
             return
         try:
+            print('closing client')
             await self.client.close()
+            print('closing proxy')
             self.proxy.close()
+            print('sleeping')
             await asyncio.sleep(0)
         finally:
             self._closed = True
+        print('api closed')
 
     def __enter__(self):
         return self
