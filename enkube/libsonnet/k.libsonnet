@@ -289,16 +289,18 @@ Kubernetes object prototypes
 
     Optional arguments:
       nodeSelector: Selector to limit which nodes pod will run on.
+      initContainers:  Containers run during pod initialization.
   */
-  Pod(name, containers, nodeSelector=null)::
+  Pod(name, containers, nodeSelector=null, initContainers=null)::
     $._Object("v1", "Pod", name) +
     $._PodSpec(containers, nodeSelector),
 
-  _PodSpec(containers, nodeSelector=null):: {
+  _PodSpec(containers, nodeSelector=null, initContainers=null):: {
     local s = self,
     spec: {
       containers: containers,
       [if nodeSelector != null then "nodeSelector"]: nodeSelector,
+      [if initContainers != null then "initContainers"]: initContainers,
     },
     serviceAccountName(name):: self + { spec+: { serviceAccountName: name } },
     imagePullSecret(name):: self + { spec+: {
@@ -318,11 +320,11 @@ Kubernetes object prototypes
     } },
   },
 
-  _PodSpecTemplate(labels, containers, nodeSelector=null):: {
+  _PodSpecTemplate(labels, containers, nodeSelector=null, initContainers=null):: {
     local t = self.spec.template,
     spec: {
       selector: { matchLabels: labels },
-      template: $._PodSpec(containers, nodeSelector) {
+      template: $._PodSpec(containers, nodeSelector, initContainers) {
         metadata: { labels: labels },
       },
     },
@@ -340,10 +342,13 @@ Kubernetes object prototypes
       name: The name of the deployment.
       labels: An object specifying labels to match Pods.
       containers: A list of Containers.
+
+    Optional arguments:
+      initContainers:  Containers run during pod initialization.
   */
-  Deployment(name, labels, containers)::
+  Deployment(name, labels, containers, initContainers=null)::
     $._Object("apps/v1", "Deployment", name).labels(labels) +
-    $._PodSpecTemplate(labels, containers),
+    $._PodSpecTemplate(labels, containers, initContainers=initContainers ),
 
   /*
     DaemonSet
@@ -355,10 +360,11 @@ Kubernetes object prototypes
 
     Optional arguments:
       nodeSelector: An object specifying which nodes to run Pods on.
+      initContainers:  Containers run during pod initialization.
   */
-  DaemonSet(name, labels, containers, nodeSelector=null)::
+  DaemonSet(name, labels, containers, nodeSelector=null, initContainers=null)::
     $._Object("apps/v1", "DaemonSet", name).labels(labels) +
-    $._PodSpecTemplate(labels, containers, nodeSelector),
+    $._PodSpecTemplate(labels, containers, nodeSelector, initContainers),
 
   /*
     StatefulSet
@@ -368,10 +374,13 @@ Kubernetes object prototypes
       serviceName: Name of the Service controlling the stateful set.
       labels: An object specifying labels to match Pods.
       containers: A list of Containers.
+
+    Optional arguments:
+      initContainers:  Containers run during pod initialization.
   */
-  StatefulSet(name, serviceName, labels, containers)::
+  StatefulSet(name, serviceName, labels, containers, initContainers=null)::
     $._Object("apps/v1", "StatefulSet", name).labels(labels) +
-    $._PodSpecTemplate(labels, containers) { spec+: { serviceName: serviceName } },
+    $._PodSpecTemplate(labels, containers, initContainers=initContainers) { spec+: { serviceName: serviceName } },
 
   /*
     Job
