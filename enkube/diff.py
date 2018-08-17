@@ -7,7 +7,7 @@ from collections import OrderedDict, deque
 from deepdiff import DeepDiff
 import click
 
-from .util import format_diff, flatten_kube_lists
+from .util import format_diff, flatten_kube_lists, close_kernel
 from .render import pass_renderer
 from .api import Api
 
@@ -156,12 +156,15 @@ def cli(renderer, last_applied, show_deleted, quiet, list_):
 
     rendered = [o for _, o in renderer.render(object_pairs_hook=dict)]
     local = gather_objects(rendered)
-    with Api(renderer.env) as api:
-        if show_deleted:
-            cluster = api.list(last_applied=last_applied)
-        else:
-            cluster = api.get_refs(rendered, last_applied)
-        cluster = gather_objects(cluster)
+    try:
+        with Api(renderer.env) as api:
+            if show_deleted:
+                cluster = api.list(last_applied=last_applied)
+            else:
+                cluster = api.get_refs(rendered, last_applied)
+            cluster = gather_objects(cluster)
+    finally:
+        close_kernel()
 
     found_changes = False
     for action, args in calculate_changes(cluster, local):

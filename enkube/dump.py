@@ -1,7 +1,7 @@
 import click
 
 from .enkube import pass_env
-from .util import format_yaml
+from .util import format_yaml, close_kernel
 from .api import Api
 
 
@@ -9,6 +9,9 @@ from .api import Api
 @pass_env
 def cli(env):
     '''Dump all objects from Kubernetes server.'''
-    with Api(env) as api:
-        for obj in api.list():
-            click.echo(format_yaml(obj))
+    try:
+        with Api(env) as api:
+            for obj in api.list():
+                click.echo(format_yaml(obj))
+    finally:
+        close_kernel()

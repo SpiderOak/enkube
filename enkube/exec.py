@@ -2,7 +2,7 @@ import sys
 from urllib.parse import quote
 import click
 
-from .util import flatten_kube_lists, format_json
+from .util import flatten_kube_lists, format_json, close_kernel
 from .enkube import pass_env
 from .api import Api
 from .ctl import kubectl_popen
@@ -18,16 +18,19 @@ from .ctl import kubectl_popen
 @pass_env
 def cli(env, namespace, labels, args):
     '''Convenience wrapper for kubectl exec.'''
-    with Api(env) as api:
-        for pod in api.list(
-            'v1', 'Pod', namespace, labelSelector=','.join(labels)
-        ):
-            if pod['status']['phase'] == 'Running':
-                podname = pod['metadata']['name']
-                break
-        else:
-            click.secho('No running pods found', fg='red')
-            sys.exit(1)
+    try:
+        with Api(env) as api:
+            for pod in api.list(
+                'v1', 'Pod', namespace, labelSelector=','.join(labels)
+            ):
+                if pod['status']['phase'] == 'Running':
+                    podname = pod['metadata']['name']
+                    break
+            else:
+                click.secho('No running pods found', fg='red')
+                sys.exit(1)
+    finally:
+        close_kernel()
 
     click.secho(f'Found pod {podname}', fg='cyan')
     args = ['-n', namespace, 'exec', podname] + list(args)

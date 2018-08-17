@@ -1,7 +1,8 @@
 PyYAML
-aiohttp
+asks
 click
 colorama
+curio
 deepdiff
 jinja2
 jsonnet

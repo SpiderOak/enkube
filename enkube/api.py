@@ -3,140 +3,173 @@ import sys
 import json
 import logging
 import tempfile
-import asyncio
 import signal
 from urllib.parse import quote_plus
 
 import click
-import aiohttp
+import curio
+from curio import subprocess
+from curio.meta import finalize
+import asks
+asks.init('curio')
 
 from .util import (
-    format_json, format_python,
     flatten_kube_lists,
-    sync_wrap, sync_wrap_iter, close_event_loop
+    format_json, format_python,
+    sync_wrap, AsyncObject,
+    get_kernel, close_kernel
 )
 from .enkube import pass_env
-from .ctl import kubectl_popen
 
 LOG = logging.getLogger(__name__)
 
 
-class ApiClosedError(RuntimeError):
-    pass
-
-
 class ProxyManager:
     log = LOG.getChild('ProxyManager')
-    _max_retries = 3
 
-    def __init__(self, env, loop=None):
+    def __init__(self, env):
         self.env = env
-        if loop is None:
-            loop = asyncio.get_event_loop()
-        self.loop = loop
+        self._d = None
         self.sock = None
         self._proc = None
-        self._ready_event = asyncio.Event(loop=loop)
-        self._close_event = asyncio.Event(loop=loop)
+        self._ready = False
+        self._closed = False
+        self._cond = curio.Condition()
+        self._terminating = False
+        self._subproc_read_task = None
 
-    def schedule(self):
-        self.loop.create_task(self._run())
+    def _ensure_sock(self):
+        if not self._d:
+            self._d = tempfile.TemporaryDirectory()
+            self.sock = os.path.join(self._d.name, 'proxy.sock')
 
-    async def _run(self):
-        with tempfile.TemporaryDirectory() as d:
-            self.sock = os.path.join(d, 'proxy.sock')
-            try:
-                await self._subproc_loop()
-            finally:
-                self.sock = None
+    async def _poll_subproc(self, wait=False):
+        p = self._proc
+        if not p:
+            return False
 
-    async def _subproc_loop(self):
+        try:
+            if wait:
+                await p.wait()
+            else:
+                p.poll()
+        except ProcessLookupError:
+            self.log.warning(f'subprocess with pid {p.pid} not found')
+        else:
+            if p.returncode is None:
+                return True
+            if p.returncode == 0:
+                self.log.debug(f'subprocess (pid {p.pid}) exited cleanly')
+            else:
+                lvl = logging.DEBUG if self._closed else logging.WARNING
+                self.log.log(
+                    lvl,
+                    f'subprocess (pid {p.pid}) terminated '
+                    f'with return code {p.returncode}'
+                )
+
+        async with self._cond:
+            self._proc = None
+            self._ready = False
+
+        if self._subproc_read_task:
+            t = self._subproc_read_task
+            self._subproc_read_task = None
+            await t.cancel()
+
+        return False
+
+    async def _ensure_subproc(self):
+        self._ensure_sock()
+        if await self._poll_subproc():
+            return
         args = [self.env.get_kubectl_path(), 'proxy', '-u', self.sock]
         kw = {
-            'loop': self.loop,
-            'stdin': None,
-            'stdout': asyncio.subprocess.PIPE,
-            'stderr': None,
+            'stdout': subprocess.PIPE,
             'preexec_fn': os.setpgrp,
             'env': self.env.get_kubectl_environ(),
         }
+        self.log.debug(f'running {" ".join(args)}')
+        self._proc = p = subprocess.Popen(args, **kw)
+        self.log.debug(f'kubectl pid {p.pid}')
+        assert self._subproc_read_task is None
+        self._subproc_read_task = await curio.spawn(self._subproc_read_loop)
 
-        retries = self._max_retries
-        while retries > 0 and not self._close_event.is_set():
-            self.log.debug(f'running {" ".join(args)}')
-            self._proc = p = await asyncio.create_subprocess_exec(*args, **kw)
-            self.log.debug(f'kubectl pid {p.pid}')
-
-            try:
-                await asyncio.gather(self._read_stdout(p), p.wait())
-            except asyncio.CancelledError:
-                self.close()
-            except Exception as err:
-                self.log.debug(
-                    f'exception while reading from '
-                    f'subprocess (pid {p.pid}): {err!r}'
-                )
-            finally:
-                self._ready_event.clear()
-                # If we get here, either p.stdout has been consumed entirely,
-                # _close_event is set and we broke out of the loop early, the
-                # subprocess exited early, or we ignored an exception.
-                # Hopefully in the latter cases, there's nothing more to read,
-                # as p.wait() will deadlock if the child process continues to
-                # fill the buffer.
-                try:
-                    p.terminate()
-                    await p.wait()
-                except ProcessLookupError:
-                    pass
-                if p.returncode == 0:
-                    self.log.debug(
-                        f'subprocess (pid {p.pid}) exited cleanly')
-                elif p.returncode != -signal.SIGTERM:
-                    retries -= 1
-                    self.log.warning(
-                        f'subprocess (pid {p.pid}) died '
-                        f'with return code {p.returncode}'
-                    )
-
-    async def _read_stdout(self, p):
+    async def _subproc_read_loop(self):
         try:
-            async for line in p.stdout:
-                if self._close_event.is_set():
-                    break
-                if line.startswith(b'Starting to serve'):
-                    self.log.debug(
-                        f'subprocess is now listening on {self.sock}')
-                    self._ready_event.set()
+            async with self._proc.stdout as stdout:
+                async for line in stdout:
+                    if line.startswith(b'Starting to serve'):
+                        async with self._cond:
+                            self._ready = True
+                            await self._cond.notify_all()
+        except curio.TaskCancelled:
+            return
         finally:
-            self._ready_event.clear()
+            await self._terminate_subproc()
+
+    async def _terminate_subproc(self):
+        if self._terminating or not await self._poll_subproc():
+            return
+        self._terminating = True
+        p = self._proc
+        self.log.debug(f'terminating subprocess (pid {p.pid})')
+        try:
+            p.terminate()
+        except ProcessLookupError:
+            pass
+        await self._poll_subproc(wait=True)
+        self._terminating = False
+
+    @sync_wrap
+    async def close(self):
+        if self._closed:
+            return
+        async with self._cond:
+            self._closed = True
+            self._ready = False
+            await self._cond.notify_all()
+        await self._terminate_subproc()
 
     async def wait(self):
-        while not self._close_event.is_set():
-            if self._proc is not None:
-                # poll for child liveness
-                await asyncio.wait([self._proc.wait()], timeout=0)
-            await asyncio.wait([
-                self._close_event.wait(),
-                self._ready_event.wait()
-            ], return_when=asyncio.FIRST_COMPLETED)
-            if self._close_event.is_set():
-                break
-            if self._proc is not None and self._ready_event.is_set():
-                return
-        raise RuntimeError(f'{self!r} is closed')
+        while not self._closed:
+            await self._poll_subproc()
+            async with self._cond:
+                if self._ready:
+                    return
+            await self._ensure_subproc()
+            async with self._cond:
+                await self._cond.wait()
+        raise RuntimeError('ProxyManager is closed')
 
-    def close(self):
-        self._ready_event.clear()
-        self._close_event.set()
+    def __del__(self):
+        if self._d:
+            self._d.cleanup()
+            self._d = None
 
 
-class AsyncClient:
-    def __init__(self, proxy, loop=None):
+class UnixSession(asks.Session):
+    def __init__(self, sock, **kw):
+        super(UnixSession, self).__init__(**kw)
+        self._sock = sock
+
+    def _make_url(self):
+        return 'http://localhost'
+
+    async def _connect(self, host_loc):
+        sock = await curio.open_unix_connection(self._sock)
+        sock._active = True
+        return sock, '80'
+
+    async def close(self):
+        await self.__aexit__(None, None, None)
+
+
+class ApiClient:
+    _max_conns = 20
+
+    def __init__(self, proxy):
         self.proxy = proxy
-        if loop is None:
-            loop = asyncio.get_event_loop()
-        self.loop = loop
         self.session = None
         self._sock = None
 
@@ -146,26 +179,30 @@ class AsyncClient:
             await self.close()
         if self.session is None:
             self._sock = self.proxy.sock
-            self.session = aiohttp.ClientSession(
-                connector=aiohttp.UnixConnector(self._sock, loop=self.loop))
+            self.session = UnixSession(
+                self._sock, connections=self._max_conns)
 
-    async def get_async(self, path):
-        url = f'http://localhost{path}'
+    @sync_wrap
+    async def get(self, path):
         await self._ensure_session()
-        async with self.session.get(url) as resp:
-            return await resp.json()
+        resp = await self.session.get(path=path)
+        return resp.json()
 
-    get = sync_wrap(get_async)
-
-    async def stream_async(self, path):
-        url = f'http://localhost{path}'
+    @sync_wrap
+    async def stream(self, path):
         await self._ensure_session()
-        async with self.session.get(url) as resp:
-            async for line in resp.content:
-                yield json.loads(line)
+        resp = await self.session.get(path=path, stream=True)
+        buf = b''
+        async with resp.body:
+            async for chunk in resp.body:
+                buf += chunk
+                newline = buf.find(b'\n') + 1
+                if newline > 0:
+                    line = buf[:newline]
+                    buf = buf[newline:]
+                    yield json.loads(line)
 
-    stream = sync_wrap_iter(stream_async)
-
+    @sync_wrap
     async def close(self):
         if self.session is not None:
             await self.session.close()
@@ -173,90 +210,114 @@ class AsyncClient:
             self._sock = None
 
 
-class MultiWatch:
-    def __init__(self, api, watches=(), loop=None):
+class MultiWatch(AsyncObject):
+    log = LOG.getChild('MultiWatch')
+
+    async def __init__(self, api, watches=()):
         self.api = api
-        if loop is None:
-            loop = asyncio.get_event_loop()
-        self.loop = loop
-        self.queue = asyncio.Queue(1, loop=loop)
-        self._tasks = set()
+        self.queue = curio.Queue(1)
+        self._group = curio.TaskGroup()
+        self._running = 0
+        self._closed = False
         for kw in watches:
-            self.watch(**kw)
+            await self.watch(**kw)
 
     async def watch_task(self, *args, **kwargs):
         try:
-            async for event, obj in self.api.watch_async(*args, **kwargs):
-                await self.queue.put((event, obj))
+            async with finalize(self.api.watch(*args, **kwargs)) as stream:
+                async for event, obj in stream:
+                    await self.queue.put((event, obj))
+        except curio.TaskCancelled:
+            return
         except Exception:
             await self.queue.put(sys.exc_info())
+        finally:
+            self._running -= 1
 
-    def watch(
+    @sync_wrap
+    async def watch(
         self, apiVersion, kind, namespace=None, name=None, **kwargs
     ):
-        t = self.loop.create_task(self.watch_task(
-            apiVersion, kind, namespace, name, **kwargs))
-        self._tasks.add(t)
-        t.add_done_callback(self._tasks.discard)
+        if self._closed:
+            raise RuntimeError('MultiWatch is closed')
+        self._running += 1
+        await self._group.spawn(
+            self.watch_task, apiVersion, kind, namespace, name, **kwargs)
 
-    def __aiter__(self):
+    def __iter__(self):
+        if self._closed:
+            raise RuntimeError('MultiWatch is closed')
         return self
 
-    async def __anext__(self):
-        # give canceled tasks a chance to cleanup
-        await asyncio.sleep(0)
+    __aiter__ = __iter__
 
-        if not self._tasks:
-            raise StopAsyncIteration
+    _sentinel = object()
+
+    async def _next(self):
+        if self._closed or self._running <= 0:
+            return self._sentinel
 
         item = await self.queue.get()
         if len(item) == 3:
-            raise item[0] from None
+            raise item[1] from None
 
         return item
 
-    def __iter__(self):
+    def __next__(self):
+        item = get_kernel().run(self._next)
+        if item is self._sentinel:
+            raise StopIteration
+        return item
+
+    async def __anext__(self):
+        item = await self._next()
+        if item is self._sentinel:
+            raise StopAsyncIteration
+        return item
+
+    @sync_wrap
+    async def close(self):
+        await self._group.cancel_remaining()
+
+    def __enter__(self):
         return self
 
-    __next__ = sync_wrap(__anext__)
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
 
-    def cancel(self):
-        for task in self._tasks:
-            task.cancel()
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.close()
 
 
 class Api:
     log = LOG.getChild('Api')
 
-    def __init__(self, env, loop=None):
+    def __init__(self, env):
         self.env = env
-        if loop is None:
-            loop = asyncio.get_event_loop()
-        self.loop = loop
-
         self._closed = False
         self._ver_list = []
         self._ver_cache = {}
         self._kind_cache = {}
+        self.proxy = ProxyManager(env)
+        self.client = ApiClient(self.proxy)
 
-        self.proxy = ProxyManager(env, loop=loop)
-        self.proxy.schedule()
-        self.client = AsyncClient(self.proxy, loop=loop)
-
-    async def list_apiVersions_async(self):
+    @sync_wrap
+    async def list_apiVersions(self):
         if not self._ver_list:
-            self._ver_list = (await self.get_async('/api'))['versions']
-            for group in (await self.get_async('/apis'))['groups']:
+            self._ver_list = (await self.get('/api'))['versions']
+            for group in (await self.get('/apis'))['groups']:
                 self._ver_list.extend(
                     v['groupVersion'] for v in group['versions'])
         return self._ver_list
 
-    list_apiVersions = sync_wrap(list_apiVersions_async)
-
-    async def get_apiVersion_async(self, apiVersion):
+    @sync_wrap
+    async def get_apiVersion(self, apiVersion):
         if apiVersion not in self._ver_cache:
-            path = await self.build_path_async(apiVersion)
-            v = await self.get_async(path)
+            path = await self.build_path(apiVersion)
+            v = await self.get(path)
             if v.get('code') == 404:
                 raise ValueError(f'apiVersion {apiVersion} not found on server')
             if v.get('kind') != 'APIResourceList':
@@ -269,24 +330,21 @@ class Api:
             self._ver_cache[apiVersion] = v
         return self._ver_cache[apiVersion]
 
-    get_apiVersion = sync_wrap(get_apiVersion_async)
-
-    async def list_resourceKinds_async(self, apiVersion):
-        await self.get_apiVersion_async(apiVersion)
+    @sync_wrap
+    async def list_resourceKinds(self, apiVersion):
+        await self.get_apiVersion(apiVersion)
         return sorted(k for v, k in self._kind_cache if v == apiVersion)
 
-    list_resourceKinds = sync_wrap(list_resourceKinds_async)
-
-    async def get_resourceKind_async(self, apiVersion, kind):
-        await self.get_apiVersion_async(apiVersion)
+    @sync_wrap
+    async def get_resourceKind(self, apiVersion, kind):
+        await self.get_apiVersion(apiVersion)
         try:
             return self._kind_cache[apiVersion, kind]
         except KeyError:
             raise ValueError(f'resource kind {kind} not found on server')
 
-    get_resourceKind = sync_wrap(get_resourceKind_async)
-
-    async def build_path_async(
+    @sync_wrap
+    async def build_path(
         self, apiVersion, kind=None, namespace=None, name=None,
         verb=None, **kwargs
     ):
@@ -305,7 +363,7 @@ class Api:
             components.extend(['namespaces', namespace])
 
         if kind is not None:
-            k = await self.get_resourceKind_async(apiVersion, kind)
+            k = await self.get_resourceKind(apiVersion, kind)
             if namespace and not k['namespaced']:
                 raise TypeError(
                     'cannot get namespaced path to cluster-scoped resource')
@@ -330,9 +388,8 @@ class Api:
 
         return path
 
-    build_path = sync_wrap(build_path_async)
-
-    async def last_applied_async(self, obj):
+    @sync_wrap
+    async def last_applied(self, obj):
         try:
             obj = json.loads(
                 obj['metadata']['annotations'][
@@ -343,43 +400,41 @@ class Api:
             return obj
         if not obj['metadata']['annotations']:
             del obj['metadata']['annotations']
-        if not (await self.get_resourceKind_async(
+        if not (await self.get_resourceKind(
             obj['apiVersion'], obj['kind']
         ))['namespaced']:
             del obj['metadata']['namespace']
         return obj
 
-    last_applied = sync_wrap(last_applied_async)
-
-    async def get_async(self, path, last_applied=False):
-        obj = await self.client.get_async(path)
+    @sync_wrap
+    async def get(self, path, last_applied=False):
+        obj = await self.client.get(path)
         if last_applied:
-            obj = await self.last_applied_async(obj)
+            obj = await self.last_applied(obj)
         return obj
 
-    get = sync_wrap(get_async)
-
-    async def list_async(
+    @sync_wrap
+    async def list(
         self, apiVersion=None, kind=None, namespace=None,
         name=None, last_applied=False, **kwargs
     ):
         if apiVersion is None:
-            versions = await self.list_apiVersions_async()
+            versions = await self.list_apiVersions()
         else:
             versions = [apiVersion]
         for apiVersion in versions:
             if kind is None:
-                kinds = await self.list_resourceKinds_async(apiVersion)
+                kinds = await self.list_resourceKinds(apiVersion)
             else:
                 kinds = [kind]
             for k in kinds:
-                path = await self.build_path_async(
+                path = await self.build_path(
                     apiVersion, k, namespace, name, **kwargs)
-                res = await self.get_async(path, last_applied=last_applied)
+                res = await self.get(path, last_applied=last_applied)
                 if res.get('kind', '').endswith('List'):
                     for obj in res.get('items', []):
                         if last_applied:
-                            obj = await self.last_applied_async(obj)
+                            obj = await self.last_applied(obj)
                         else:
                             obj = dict(obj, apiVersion=apiVersion, kind=k)
                         yield obj
@@ -388,35 +443,33 @@ class Api:
                 else:
                     yield res
 
-    list = sync_wrap_iter(list_async)
-
-    def ref_to_path_async(self, ref):
+    @sync_wrap
+    def ref_to_path(self, ref):
         md = ref.get('metadata', {})
-        return self.build_path_async(
+        return self.build_path(
             ref['apiVersion'],
             ref['kind'],
             md.get('namespace'),
             md.get('name')
         )
 
-    ref_to_path = sync_wrap(ref_to_path_async)
-
-    async def get_refs_async(self, refs, last_applied=False):
+    @sync_wrap
+    async def get_refs(self, refs, last_applied=False):
         for ref in flatten_kube_lists(refs):
-            path = await self.ref_to_path_async(ref)
-            obj = await self.get_async(path, last_applied=last_applied)
+            path = await self.ref_to_path(ref)
+            obj = await self.get(path, last_applied=last_applied)
             if obj.get('code') == 404:
                 continue
             yield obj
 
-    get_refs = sync_wrap_iter(get_refs_async)
+    @sync_wrap
+    async def stream(self, path):
+        async with finalize(self.client.stream(path)) as stream:
+            async for event in stream:
+                yield event
 
-    def stream_async(self, path):
-        return self.client.stream_async(path)
-
-    stream = sync_wrap_iter(stream_async)
-
-    async def watch_async(
+    @sync_wrap
+    async def watch(
         self, apiVersion, kind, namespace=None, name=None, **kwargs
     ):
         kw = {
@@ -424,33 +477,34 @@ class Api:
             'namespace': namespace, 'name': name,
             'verb': 'watch'
         }
-        path = await self.build_path_async(**kw)
-        async for event in self.stream_async(path):
-            yield event['type'], event['object']
-            if event['type'] == 'ERROR':
-                return
+        path = await self.build_path(**kw)
+        async with finalize(self.stream(path)) as stream:
+            async for event in stream:
+                yield event['type'], event['object']
+                if event['type'] == 'ERROR':
+                    return
 
-    watch = sync_wrap_iter(watch_async)
-
+    @sync_wrap
     async def close(self):
         if self._closed:
             return
         try:
-            print('closing client')
             await self.client.close()
-            print('closing proxy')
-            self.proxy.close()
-            print('sleeping')
-            await asyncio.sleep(0)
+            await self.proxy.close()
         finally:
             self._closed = True
-        print('api closed')
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        sync_wrap(self.close)()
+        self.close()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.close()
 
 
 def displayhook(value):
@@ -491,4 +545,4 @@ def cli(env):
             shell.interact()
     finally:
         sys.displayhook = old_displayhook
-        close_event_loop()
+        close_kernel()

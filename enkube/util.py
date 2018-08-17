@@ -1,11 +1,17 @@
+import sys
 import json
 import yaml
 import pyaml
-import asyncio
-import functools
+import threading
+from functools import wraps
 from collections import OrderedDict
 from pprint import pformat
+
 from pygments import highlight, lexers, formatters
+
+import curio
+from curio.meta import (
+    curio_running, _from_coroutine, _isasyncgenfunction, finalize)
 
 
 def load_yaml(stream, Loader=yaml.SafeLoader, object_pairs_hook=OrderedDict):
@@ -56,64 +62,74 @@ def flatten_kube_lists(items):
             yield obj
 
 
-def sync_wrap(coro_func):
-    @functools.wraps(coro_func)
-    def wrapper(*args, **kwargs):
-        loop = asyncio.get_event_loop()
-        try:
-            return loop.run_until_complete(coro_func(*args, **kwargs))
-        except StopAsyncIteration:
-            raise StopIteration from None
-    return wrapper
+_locals = threading.local()
 
 
-def sync_wrap_iter(async_gen_func):
-    @functools.wraps(async_gen_func)
-    def wrapped(*args, **kwargs):
-        loop = asyncio.get_event_loop()
-        it = async_gen_func(*args, **kwargs)
-        while True:
+def get_kernel():
+    try:
+        return _locals.curio_kernel
+    except AttributeError:
+        _locals.curio_kernel = k = curio.Kernel()
+        return k
+
+
+def set_kernel(kernel):
+    _locals.curio_kernel = kernel
+
+
+def close_kernel():
+    try:
+        k = _locals.curio_kernel
+    except AttributeError:
+        return
+    k.run(shutdown=True)
+    del _locals.curio_kernel
+
+
+def sync_wrap(asyncfunc):
+    if _isasyncgenfunction(asyncfunc):
+        def _gen(*args, **kwargs):
+            k = get_kernel()
+            it = asyncfunc(*args, **kwargs)
+            f = finalize(it)
+            sentinal = object()
+            async def _next():
+                try:
+                    return await it.__anext__()
+                except StopAsyncIteration:
+                    return sentinal
+            k.run(f.__aenter__)
             try:
-                yield loop.run_until_complete(it.__anext__())
-            except StopAsyncIteration:
-                break
+                while True:
+                    item = k.run(_next)
+                    if item is sentinal:
+                        return
+                    yield item
+            finally:
+                k.run(f.__aexit__, *sys.exc_info())
+
+        @wraps(asyncfunc)
+        def wrapped(*args, **kwargs):
+            if _from_coroutine() or curio_running():
+                return asyncfunc(*args, **kwargs)
+            else:
+                return _gen(*args, **kwargs)
+
+    else:
+        @wraps(asyncfunc)
+        def wrapped(*args, **kwargs):
+            if _from_coroutine() or curio_running():
+                return asyncfunc(*args, **kwargs)
+            else:
+                return get_kernel().run(asyncfunc, *args, **kwargs)
+
+    wrapped._awaitable = True
     return wrapped
 
 
-def async_gen_next_timeout(gen, timeout, loop=None):
-    if loop is None:
-        loop = asyncio.get_event_loop()
-    try:
-        return loop.run_until_complete(
-            asyncio.wait_for(gen.__anext__(), timeout))
-    except StopAsyncIteration:
-        raise StopIteration from None
+class AsyncInstanceType(curio.meta.AsyncInstanceType):
+    __call__ = sync_wrap(curio.meta.AsyncInstanceType.__call__)
 
 
-def close_event_loop(loop=None):
-    if loop is None:
-        loop = asyncio.get_event_loop()
-    if loop.is_closed():
-        return
-    # lifted with minor modifications from asyncio.runners.run()
-    # https://github.com/python/cpython/blob/3.7/Lib/asyncio/runners.py
-    try:
-        to_cancel = asyncio.all_tasks(loop)
-        if to_cancel:
-            for task in to_cancel:
-                task.cancel()
-            loop.run_until_complete(asyncio.gather(
-                *to_cancel, loop=loop, return_exceptions=True))
-            for task in to_cancel:
-                if task.cancelled():
-                    continue
-                if task.exception() is not None:
-                    loop.call_exception_handler({
-                        'message': (
-                            'unhandled exception while closing event loop'),
-                        'exception': task.exception(),
-                        'task': task
-                    })
-        loop.run_until_complete(loop.shutdown_asyncgens())
-    finally:
-        loop.close()
+class AsyncObject(metaclass=AsyncInstanceType):
+    pass
