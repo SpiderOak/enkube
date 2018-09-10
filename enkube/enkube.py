@@ -31,6 +31,9 @@ class PluginLoader:
                 return None
         return self._plugins[name]
 
+    def load_all(self):
+        return [self.load(name) for name in self.list()]
+
 
 class CommandPluginLoader(click.MultiCommand, PluginLoader):
     entrypoint_type = 'enkube.commands'
@@ -50,22 +53,30 @@ class Environment:
     def __init__(self, name=None, search=()):
         self.name = name
         self.search = list(search)
-        if self.name:
-            self.envdir = os.path.join(os.getcwd(), 'envs', self.name)
-            self.parents = self._load_parents()
-        else:
-            self.envdir = None
-            self.parents = []
+        self.envdir = None
+        self.parents = []
+        self.envdir = self._find_envdir()
+        self.parents = self._load_parents()
         self.render_plugin_loader = RenderPluginLoader()
         self.renderers = {}
 
+    def _find_envdir(self):
+        if not self.name:
+            return
+        for d in self.search_dirs():
+            p = os.path.join(d, 'envs', self.name)
+            if os.path.isdir(p):
+                return p
+
     def _load_parents(self):
+        if not self.envdir:
+            return []
         try:
             f = open(os.path.join(self.envdir, 'parent_envs'))
         except FileNotFoundError:
             return []
         with f:
-            return [type(self)(n.rstrip('\n')) for n in f]
+            return [type(self)(n.rstrip('\n'), self.search) for n in f]
 
     def search_dirs(self, pre=()):
         for d in pre:
