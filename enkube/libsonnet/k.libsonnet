@@ -642,4 +642,26 @@ Kubernetes object prototypes
       ] } },
       _domain:: self.spec.rules[0].host,
     },
+
+  /*
+    CustomResourceDefinition
+
+    Required arguments:
+      name: The name of the crd resource.
+      group: The spec for the crd resource.
+      version: The version for the crd resource.
+      names: The kind and plural names for the crd resource.
+      scope: The scope (Cluster or Namespaced) of the crd resource
+  */
+
+  CustomResourceDefinition(name, group, version, names, scope)::
+    $._Object("apiextensions.k8s.io/v1beta1", "CustomResourceDefinition", name) +
+    $.ClusterScoped + {
+      spec+: {
+        group: group,
+        version: version,
+        names: names,
+        scope: scope,
+    },
+  },
 }
