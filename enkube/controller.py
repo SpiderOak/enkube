@@ -87,22 +87,32 @@ class Controller:
     @sync_wrap
     async def run(self):
         self.log.info('controller starting')
+        for handler in self.handlers:
+            if hasattr(handler, 'start'):
+                try:
+                    await handler.start()
+                except Exception:
+                    self.log.exception('error starting handler')
+
         shutdown_event = curio.SignalEvent(signal.SIGINT, signal.SIGTERM)
         try:
             async with curio.TaskGroup(wait=any) as g:
                 await g.spawn(self._crd_task)
                 await g.spawn(self._watch_task)
                 shutdown_task = await g.spawn(shutdown_event.wait)
+
+        except Exception:
+            self.log.exception('error in controller')
+
         finally:
             del shutdown_event
+            self.log.info('controller shutting down')
             for handler in self.handlers:
                 if hasattr(handler, 'close'):
                     try:
                         await handler.close()
                     except Exception:
                         self.log.exception('error closing handler')
-        if g.completed is shutdown_task:
-            self.log.info('controller shutting down')
 
     async def _crd_task(self):
         first = True
