@@ -128,7 +128,10 @@ class Controller:
             for crd in self.crds:
                 if crd['metadata']['name'] not in current:
                     self.log.info(f"creating CRD {crd['metadata']['name']}")
-                    await self.api.create(crd)
+                    try:
+                        await self.api.create(crd)
+                    except Exception as err:
+                        self.log.error(f'error creating CRD: {err}')
 
     async def _watch_task(self):
         state = {}
