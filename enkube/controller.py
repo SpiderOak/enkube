@@ -31,11 +31,11 @@ class EventHandler:
     def __call__(self, func):
         return type(self)(events=self.events, func=func, **self.watch_spec)
 
-    async def handle_event(self, controller, event, obj):
+    async def handle_event(self, handler, controller, event, obj):
         if self.func is None:
             raise TypeError(f'{self.__class__.__name__} object is not bound')
         if self.events is None or event in self.events:
-            return await self.func(controller, event, obj)
+            return await self.func(handler, controller, event, obj)
 
 
 class HandlerType(type):
@@ -76,13 +76,13 @@ class Controller:
     def __init__(self, api, handlers=()):
         self.api = api
         self.crds = []
-        self.event_handlers = []
+        self.handlers = []
         for h in handlers:
             self.add_handler(h)
 
     def add_handler(self, handler):
         self.crds.extend(handler.crds)
-        self.event_handlers.extend(handler.event_handlers)
+        self.handlers.append(handler)
 
     @sync_wrap
     async def run(self):
@@ -95,6 +95,12 @@ class Controller:
                 shutdown_task = await g.spawn(shutdown_event.wait)
         finally:
             del shutdown_event
+            for handler in self.handlers:
+                if hasattr(handler, 'close'):
+                    try:
+                        await handler.close()
+                    except Exception:
+                        self.log.exception('error closing handler')
         if g.completed is shutdown_task:
             self.log.info('controller shutting down')
 
@@ -120,8 +126,9 @@ class Controller:
         while True:
             next_time = await curio.wake_at(next_time) + self.watch_interval
             watches = [dict(w) for w in {
-                tuple(sorted(h.watch_spec.items()))
-                for h in self.event_handlers
+                tuple(sorted(e.watch_spec.items()))
+                for h in self.handlers
+                for e in h.event_handlers
             }]
             if not watches:
                 continue
@@ -155,8 +162,9 @@ class Controller:
             state[path] = v
 
     async def handle_event(self, event, obj):
-        for handler in self.event_handlers:
-            await handler.handle_event(self, event, obj)
+        for handler in self.handlers:
+            for event_handler in handler.event_handlers:
+                await event_handler.handle_event(handler, self, event, obj)
 
 
 class HandlerPluginLoader(PluginLoader):
