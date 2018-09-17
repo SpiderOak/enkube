@@ -3,8 +3,8 @@ import sys
 import json
 import logging
 import tempfile
-import signal
 from urllib.parse import quote_plus
+from functools import partialmethod
 
 import click
 import curio
@@ -165,6 +165,11 @@ class UnixSession(asks.Session):
         await self.__aexit__(None, None, None)
 
 
+class ApiError(Exception):
+    def __init__(self, resp):
+        self.resp = resp
+
+
 class ApiClient:
     _max_conns = 20
 
@@ -183,24 +188,38 @@ class ApiClient:
                 self._sock, connections=self._max_conns)
 
     @sync_wrap
-    async def get(self, path):
+    async def request(self, method, path, **kw):
         await self._ensure_session()
-        resp = await self.session.get(path=path)
+        resp = await self.session.request(method=method, path=path, **kw)
+        if resp.status_code < 200 or resp.status_code >= 300:
+            raise ApiError(resp)
         return resp.json()
+
+    get = partialmethod(request, 'GET')
+    head = partialmethod(request, 'HEAD')
+    post = partialmethod(request, 'POST')
+    put = partialmethod(request, 'PUT')
+    delete = partialmethod(request, 'DELETE')
+    options = partialmethod(request, 'OPTIONS')
 
     @sync_wrap
     async def stream(self, path):
         await self._ensure_session()
         resp = await self.session.get(path=path, stream=True)
+        if resp.status_code != 200:
+            raise ApiError(resp)
         buf = b''
         async with resp.body:
             async for chunk in resp.body:
                 buf += chunk
-                newline = buf.find(b'\n') + 1
-                if newline > 0:
-                    line = buf[:newline]
-                    buf = buf[newline:]
-                    yield json.loads(line)
+                while True:
+                    newline = buf.find(b'\n') + 1
+                    if newline > 0:
+                        line = buf[:newline]
+                        buf = buf[newline:]
+                        yield json.loads(line)
+                    else:
+                        break
 
     @sync_wrap
     async def close(self):
@@ -227,12 +246,12 @@ class MultiWatch(AsyncObject):
             async with finalize(self.api.watch(*args, **kwargs)) as stream:
                 async for event, obj in stream:
                     await self.queue.put((event, obj))
-        except curio.TaskCancelled:
-            return
         except Exception:
             await self.queue.put(sys.exc_info())
         finally:
             self._running -= 1
+            if self._closed or self._running <= 0 and not self.queue.full():
+                await self.queue.put(self._sentinel)
 
     @sync_wrap
     async def watch(
@@ -254,14 +273,19 @@ class MultiWatch(AsyncObject):
     _sentinel = object()
 
     async def _next(self):
-        if self._closed or self._running <= 0:
-            return self._sentinel
+        while True:
+            if self._closed or self._running <= 0:
+                return self._sentinel
 
-        item = await self.queue.get()
-        if len(item) == 3:
-            raise item[1] from None
+            item = await self.queue.get()
+            if item is self._sentinel:
+                return item
+            elif len(item) == 3:
+                if item[0] is curio.TaskCancelled:
+                    continue
+                raise item[1] from None
 
-        return item
+            return item
 
     def __next__(self):
         item = get_kernel().run(self._next)
@@ -408,6 +432,7 @@ class Api:
 
     @sync_wrap
     async def get(self, path, last_applied=False):
+        self.log.debug(f'get {path}')
         obj = await self.client.get(path)
         if last_applied:
             obj = await self.last_applied(obj)
@@ -444,6 +469,14 @@ class Api:
                     yield res
 
     @sync_wrap
+    async def create(self, obj):
+        path = await self.ref_to_path(obj)
+        if obj.get('metadata', {}).get('name'):
+            path = path.rsplit('/', 1)[0]
+        self.log.debug(f'post {path}')
+        return await self.client.post(path, json=obj)
+
+    @sync_wrap
     def ref_to_path(self, ref):
         md = ref.get('metadata', {})
         return self.build_path(
@@ -457,13 +490,17 @@ class Api:
     async def get_refs(self, refs, last_applied=False):
         for ref in flatten_kube_lists(refs):
             path = await self.ref_to_path(ref)
-            obj = await self.get(path, last_applied=last_applied)
-            if obj.get('code') == 404:
-                continue
+            try:
+                obj = await self.get(path, last_applied=last_applied)
+            except ApiError as err:
+                if err.resp.status_code == 404:
+                    continue
+                raise
             yield obj
 
     @sync_wrap
     async def stream(self, path):
+        self.log.debug(f'stream {path}')
         async with finalize(self.client.stream(path)) as stream:
             async for event in stream:
                 yield event

@@ -7,6 +7,8 @@ import click
 
 from .log import init_logging
 
+LOG = logging.getLogger(__name__)
+
 
 class PluginLoader:
     @property
@@ -50,6 +52,8 @@ class RenderPluginLoader(PluginLoader):
 
 
 class Environment:
+    log = LOG.getChild('Environment')
+
     def __init__(self, name=None, search=()):
         self.name = name
         self.search = list(search)
@@ -66,6 +70,7 @@ class Environment:
         for d in self.search_dirs():
             p = os.path.join(d, 'envs', self.name)
             if os.path.isdir(p):
+                self.log.debug(f'using environment directory {p}')
                 return p
 
     def _load_parents(self):

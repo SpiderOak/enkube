@@ -1,13 +1,14 @@
 import time
 import logging
+import inspect
+import signal
 
 import click
 import curio
-from curio import timeout_after, TaskTimeout
 
 from .api import Api, MultiWatch
 from .util import close_kernel, sync_wrap
-from .enkube import pass_env
+from .enkube import pass_env, PluginLoader
 
 LOG = logging.getLogger(__name__)
 
@@ -37,73 +38,107 @@ class EventHandler:
             return await self.func(controller, event, obj)
 
 
-class ControllerType(type):
+class HandlerType(type):
     def __new__(cls, clsname, supers, attrs):
-        handlers = []
+        event_handlers = []
         for k in attrs:
             v = attrs[k]
             if isinstance(v, EventHandler):
-                handlers.append(v)
+                event_handlers.append(v)
                 attrs[k] = v.func
-        attrs['handlers'] = handlers
+        attrs['event_handlers'] = event_handlers
         return type.__new__(cls, clsname, supers, attrs)
 
 
-class BaseController(metaclass=ControllerType):
-    '''Dispatch API events to handlers. Optionally create CRDs.
+class BaseHandler(metaclass=HandlerType):
+    '''Handler base class.
 
-    Subclass this to create a controller. Example event handler:
+    A handler is an object that has a list of CRDs to create, and event
+    handlers that the controller will dispatch events to.
+
+    Subclass this to create a handler. Example event handler:
 
     @EventHandler('apps/v1', 'Deployment')
     async def deployment_event(self, event, obj):
         print(f"{event} deployment {obj['metadata']['name']}")
 
     '''
-
-    log = LOG.getChild('BaseController')
-    watch_timeout = 60
     crds = ()
+    click_params = ()
 
-    def __init__(self, api):
+
+class Controller:
+    '''Dispatch API events to handlers. Create CRDs.'''
+    log = LOG.getChild('Controller')
+    crd_check_interval = 60
+    watch_interval = 2
+
+    def __init__(self, api, handlers=()):
         self.api = api
+        self.crds = []
+        self.event_handlers = []
+        for h in handlers:
+            self.add_handler(h)
 
-    async def ensure_crds(self):
-        if not self.crds:
-            self.log.debug('no CRDs to create')
-            return
-        current = set(crd['metadata']['name'] async for crd in self.api.list(
-            'apiextensions.k8s.io/v1beta1', 'CustomResourceDefinition'))
-        for crd in self.crds:
-            if crd['metadata']['name'] not in current:
-                self.log.info(f"creating CRD {crd['metadata']['name']}")
-                await self.api.create(crd)
+    def add_handler(self, handler):
+        self.crds.extend(handler.crds)
+        self.event_handlers.extend(handler.event_handlers)
 
     @sync_wrap
     async def run(self):
-        state = {}
+        self.log.info('controller starting')
+        shutdown_event = curio.SignalEvent(signal.SIGINT, signal.SIGTERM)
+        try:
+            async with curio.TaskGroup(wait=any) as g:
+                await g.spawn(self._crd_task)
+                await g.spawn(self._watch_task)
+                shutdown_task = await g.spawn(shutdown_event.wait)
+        finally:
+            del shutdown_event
+        if g.completed is shutdown_task:
+            self.log.info('controller shutting down')
+
+    async def _crd_task(self):
+        first = True
         while True:
-            await self.ensure_crds()
-            watches = [h.watch_spec for h in self.handlers]
+            if not first:
+                await curio.sleep(self.crd_check_interval)
+            first = False
+            if not self.crds:
+                self.log.debug('no CRDs to create')
+                continue
+            current = {crd['metadata']['name'] async for crd in self.api.list(
+                'apiextensions.k8s.io/v1beta1', 'CustomResourceDefinition')}
+            for crd in self.crds:
+                if crd['metadata']['name'] not in current:
+                    self.log.info(f"creating CRD {crd['metadata']['name']}")
+                    await self.api.create(crd)
+
+    async def _watch_task(self):
+        state = {}
+        next_time = 0
+        while True:
+            next_time = await curio.wake_at(next_time) + self.watch_interval
+            watches = [dict(w) for w in {
+                tuple(sorted(h.watch_spec.items()))
+                for h in self.event_handlers
+            }]
             if not watches:
-                await curio.sleep(self.watch_timeout)
                 continue
             w = await MultiWatch(self.api, watches)
             async with w:
-                while True:
-                    await self._watch_next(state, w)
+                try:
+                    async for event, obj in w:
+                        await self._handle(state, event, obj)
+                    else:
+                        self.log.debug('watch exhausted')
+                except curio.TaskCancelled:
+                    return
+                except Exception as err:
+                    self.log.warning(
+                        f'error while watching for events: {err}')
 
-    async def _watch_next(self, state, w):
-        clock = await curio.clock()
-        try:
-            event, obj = await timeout_after(self.watch_timeout, w.__anext__)
-        except TaskTimeout:
-            self.log.debug('timed out waiting for event')
-            return
-        except StopAsyncIteration:
-            self.log.debug('watch exhausted')
-            await curio.wake_at(clock + self.watch_timeout)
-            return
-
+    async def _handle(self, state, event, obj):
         path = await self.api.ref_to_path(obj)
         v = obj.get('metadata', {}).get('resourceVersion')
 
@@ -120,16 +155,45 @@ class BaseController(metaclass=ControllerType):
             state[path] = v
 
     async def handle_event(self, event, obj):
-        for handler in self.handlers:
+        for handler in self.event_handlers:
             await handler.handle_event(self, event, obj)
 
 
-@click.command()
-@pass_env
-def cli(env):
-    '''Run a Kubernetes controller.'''
-    try:
-        with Api(env) as api:
-            BaseController(api).run()
-    finally:
-        close_kernel()
+class HandlerPluginLoader(PluginLoader):
+    entrypoint_type = 'enkube.controller.handlers'
+
+
+def _pass_kwargs(kw, plugin):
+    kw = dict(
+        (k, kw[k]) for k in inspect.signature(plugin).parameters if k in kw)
+    return plugin(**kw)
+
+
+def cli():
+    handler_plugins = HandlerPluginLoader().load_all()
+
+    @click.command()
+    @pass_env
+    def cli(env, **kw):
+        '''Run a Kubernetes controller.'''
+
+        #from curio.monitor import Monitor
+        #from .util import get_kernel
+        #k = get_kernel()
+        #m = Monitor(k)
+        #k._call_at_shutdown(m.close)
+
+        try:
+            with Api(env) as api:
+                kw['api'] = api
+                handlers = [_pass_kwargs(kw, plugin) for plugin in handler_plugins]
+                Controller(api, handlers).run()
+        finally:
+            close_kernel()
+
+    for plugin in handler_plugins:
+        cli.params.extend(plugin.click_params)
+
+    return cli
+
+cli = cli()
