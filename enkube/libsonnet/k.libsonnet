@@ -649,19 +649,30 @@ Kubernetes object prototypes
     Required arguments:
       name: The name of the crd resource.
       group: The spec for the crd resource.
-      version: The version for the crd resource.
       names: The kind and plural names for the crd resource.
       scope: The scope (Cluster or Namespaced) of the crd resource
+
+    Optional arguments:
+      version: The version for the crd resource (default is v1).
+      versions: Multiple versions for the crd resource.
+
+   Prior to v1.11 of Kubernetes, the argument 'version' was used to
+   define the version of the resource.  After, the spec was changed
+   to 'versions'.  If neither 'version' or 'versions' is specified,
+   the default will be to render with a version of 'v1'.  If both
+   version and versions are specified, version will be ignored
+   completely.
   */
 
-  CustomResourceDefinition(name, group, version, names, scope)::
+  CustomResourceDefinition(name, group, names, scope, version="v1", versions=null)::
     $._Object("apiextensions.k8s.io/v1beta1", "CustomResourceDefinition", name) +
     $.ClusterScoped + {
       spec+: {
         group: group,
-        version: version,
         names: names,
         scope: scope,
+        [if versions != null then "versions"]: versions,
+        [if versions == null then "version"]: version,
     },
   },
 }
