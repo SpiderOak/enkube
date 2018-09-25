@@ -32,7 +32,7 @@ local k = import "enkube/k";
       email: The email address of the registering user.
   */
   LetsEncryptStaging(email):: $.Issuer(
-    "letsencrypt-staging", "https://acme-staging.api.letsencrypt.org/directory", email
+    "letsencrypt-staging", "https://acme-staging-v02.api.letsencrypt.org/directory", email
   ),
 
   /*
@@ -42,7 +42,7 @@ local k = import "enkube/k";
       email: The email address of the registering user.
   */
   LetsEncryptProd(email):: $.Issuer(
-    "letsencrypt-prod", "https://acme-v01.api.letsencrypt.org/directory", email
+    "letsencrypt-prod", "https://acme-v02.api.letsencrypt.org/directory", email
   ),
 
   /*
