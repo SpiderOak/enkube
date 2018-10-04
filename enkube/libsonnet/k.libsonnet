@@ -35,9 +35,10 @@ Kubernetes object prototypes
         namespace: s.metadata.namespace,
       },
     },
+    __namespaced: true,
   },
 
-  ClusterScoped:: { ns(ns):: self },
+  ClusterScoped:: { ns(ns):: self, __namespaced: false },
 
   applyNamespace(ns, items):: std.map(
     function(i) if std.objectHasAll(i, "ns") then i.ns(ns) else i, items
@@ -53,6 +54,7 @@ Kubernetes object prototypes
     items: std.filter(function(i) i != null, items),
     map(f):: self + { items: std.map(f, super.items) },
     ns(ns):: self + { items: $.applyNamespace(ns, super.items) },
+    __namespaced: false,
   },
 
   /*
@@ -363,7 +365,7 @@ Kubernetes object prototypes
   */
   Deployment(name, labels, containers, initContainers=null)::
     $._Object("apps/v1", "Deployment", name).labels(labels) +
-    $._PodSpecTemplate(labels, containers, initContainers=initContainers ),
+    $._PodSpecTemplate(labels, containers, initContainers=initContainers),
 
   /*
     DaemonSet
@@ -688,6 +690,25 @@ Kubernetes object prototypes
         scope: scope,
         [if versions != null then "versions"]: versions,
         [if versions == null then "version"]: version,
+      },
     },
-  },
+
+  /*
+    APIService
+
+    Required arguments:
+      name: The name of the resource.
+      group: The API group.
+      version: The API version.
+      service: Object specifying the Service serving the API.
+  */
+
+  APIService(name, group, version, service)::
+    $._Object("apiregistration.k8s.io/v1beta1", "APIService", name) + $.ClusterScoped + {
+      spec+: {
+        group: group,
+        version: version,
+        service: service,
+      },
+    },
 }

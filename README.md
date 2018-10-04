@@ -63,7 +63,7 @@ $ pip install -e .
 
 Let's create a simple manifest file that defines a single Kubernetes Pod:
 
-```jsonnet
+```jsonc
 /* pod.jsonnet */
 local k = import "enkube/k";
 k.Pod("myapp", [

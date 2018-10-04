@@ -28,14 +28,6 @@ from .enkube import pass_env
 
 
 SEARCH_EXTS = ['.jsonnet']
-NO_NAMESPACE_KINDS = [
-    'Namespace',
-    'ClusterRole',
-    'ClusterRoleBinding',
-    'StorageClass',
-    'PersistentVolume',
-    'CustomResourceDefinition',
-]
 URL_RX = re.compile(r'https?://')
 
 
@@ -82,20 +74,19 @@ class Renderer:
                 s = f.read()
             obj = self.render_jsonnet(
                 f.name, s, object_pairs_hook=object_pairs_hook)
-            if self.verify_namespace:
-                self.verify_object_namespace(obj)
+            self.verify_object_namespace(obj)
             yield f.name, obj
 
     def verify_object_namespace(self, obj):
         objs = [obj]
         while objs:
             obj = objs.pop(0)
-            if 'apiVersion' not in obj or obj['kind'] in NO_NAMESPACE_KINDS:
-                continue
-            if obj['kind'] == 'List':
+            if 'kind' in obj and obj['kind'] == 'List':
                 objs.extend(obj['items'])
+            namespaced = obj.pop('__namespaced', False)
+            if not self.verify_namespace:
                 continue
-            if not obj.get('metadata', {}).get('namespace'):
+            if namespaced and not obj.get('metadata', {}).get('namespace'):
                 raise RuntimeError('{} is missing namespace'.format(obj['kind']), obj)
 
     def render_jsonnet(self, name, s, object_pairs_hook=OrderedDict):
