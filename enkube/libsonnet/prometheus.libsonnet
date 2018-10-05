@@ -28,15 +28,18 @@ local k = import "enkube/k";
       name: The name of the prometheus instance.
       url: The external URL of the prometheus interface.
       serviceMonitorSelector: Selector used to match Services to monitor.
+
+    Optional arguments:
+      alertManager: The alertmanager instance to connect to.
   */
-  Prometheus(name, url, serviceMonitorSelector, replicas=1)::
+  Prometheus(name, url, serviceMonitorSelector, alertManagers=null, replicas=1)::
     k._Object("monitoring.coreos.com/v1", "Prometheus", name).labels({
       "k8s-app": "prometheus",
       prometheus: name,
     }) {
       spec: {
         replicas: replicas,
-        alerting: { alertmanagers: [
+        alerting: { alertmanagers: if alertManagers != null then alertManagers else [
           { name: "alertmanager-main", namespace: "kube-system", port: "http" },
         ] },
         [if url != null then "externalUrl"]: url,
@@ -70,4 +73,7 @@ local k = import "enkube/k";
       [if jobLabel != null then "jobLabel"]: jobLabel,
       endpoints: endpoints,
     } },
+
+  PrometheusRule(name, spec, labels)::
+    k._Object("monitoring.coreos.com/v1", "PrometheusRule", name).labels(labels) { spec: spec },
 }
