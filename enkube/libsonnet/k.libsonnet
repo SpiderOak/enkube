@@ -23,7 +23,11 @@ Kubernetes object prototypes
     local s = self,
     apiVersion: apiVersion,
     kind: kind,
-    [if name != null then "metadata"]: { name: name },
+    metadata: {
+      name: name,
+      namespace:
+        if std.extVar("VERIFY_NAMESPACES") == "1" then { assert false : "must specify namespace" },
+    },
     name(name):: self + { metadata+: { name: name } },
     ns(ns):: self + { metadata+: { namespace: ns } },
     labels(labels):: self + { metadata+: { labels: labels } },
@@ -35,10 +39,9 @@ Kubernetes object prototypes
         namespace: s.metadata.namespace,
       },
     },
-    __namespaced: true,
   },
 
-  ClusterScoped:: { ns(ns):: self, __namespaced: false },
+  ClusterScoped:: { ns(ns):: self, metadata+: { namespace:: null } },
 
   applyNamespace(ns, items):: std.map(
     function(i) if std.objectHasAll(i, "ns") then i.ns(ns) else i, items
@@ -51,10 +54,10 @@ Kubernetes object prototypes
       items: A list of Kubernetes resources.
   */
   List(items):: $._Object("v1", "List") {
+    metadata+: { namespace:: null },
     items: std.filter(function(i) i != null, items),
     map(f):: self + { items: std.map(f, super.items) },
     ns(ns):: self + { items: $.applyNamespace(ns, super.items) },
-    __namespaced: false,
   },
 
   /*

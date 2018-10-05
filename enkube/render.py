@@ -74,26 +74,16 @@ class Renderer:
                 s = f.read()
             obj = self.render_jsonnet(
                 f.name, s, object_pairs_hook=object_pairs_hook)
-            self.verify_object_namespace(obj)
             yield f.name, obj
-
-    def verify_object_namespace(self, obj):
-        objs = [obj]
-        while objs:
-            obj = objs.pop(0)
-            if 'kind' in obj and obj['kind'] == 'List':
-                objs.extend(obj['items'])
-            namespaced = obj.pop('__namespaced', False)
-            if not self.verify_namespace:
-                continue
-            if namespaced and not obj.get('metadata', {}).get('namespace'):
-                raise RuntimeError('{} is missing namespace'.format(obj['kind']), obj)
 
     def render_jsonnet(self, name, s, object_pairs_hook=OrderedDict):
         s = _jsonnet.evaluate_snippet(
             name, s,
             import_callback=self.import_callback,
-            native_callbacks=self.native_callbacks
+            native_callbacks=self.native_callbacks,
+            ext_vars={
+                'VERIFY_NAMESPACES': '1' if self.verify_namespace else '0'
+            }
         )
         return json.loads(s, object_pairs_hook=object_pairs_hook)
 
