@@ -41,7 +41,10 @@ Kubernetes object prototypes
     },
   },
 
-  ClusterScoped:: { ns(ns):: self, metadata+: { namespace:: null } },
+  ClusterScoped:: {
+    metadata+: { namespace:: null },
+    ns(ns):: self + { metadata+: { namespace:: ns } },
+  },
 
   applyNamespace(ns, items):: std.map(
     function(i) if std.objectHasAll(i, "ns") then i.ns(ns) else i, items
