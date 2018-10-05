@@ -129,7 +129,9 @@ class Renderer:
             except Exception:
                 raise RuntimeError('error retrieving URL')
 
-        for d in self.env.search_dirs([dirname]):
+        for d in self.env.search_dirs(
+            [dirname], [os.path.join(dirname, 'defaults')]
+        ):
             path = os.path.join(d, rel)
             try:
                 with open(path) as f:

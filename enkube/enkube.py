@@ -97,7 +97,7 @@ class Environment:
         with f:
             return [type(self)(n.rstrip('\n'), self.search) for n in f]
 
-    def search_dirs(self, pre=()):
+    def search_dirs(self, pre=(), post=()):
         for d in pre:
             yield d
         for d in self.search:
@@ -108,6 +108,8 @@ class Environment:
             for d in parent.search_dirs():
                 yield d
         yield os.getcwd()
+        for d in post:
+            yield d
 
     def load_renderer(self, name):
         if name not in self.renderers:
