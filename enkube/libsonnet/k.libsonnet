@@ -54,7 +54,7 @@ Kubernetes object prototypes
       items: A list of Kubernetes resources.
   */
   List(items):: $._Object("v1", "List") {
-    metadata+: { namespace:: null },
+    metadata:: {},
     items: std.filter(function(i) i != null, items),
     map(f):: self + { items: std.map(f, super.items) },
     ns(ns):: self + { items: $.applyNamespace(ns, super.items) },
