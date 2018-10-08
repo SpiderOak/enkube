@@ -37,8 +37,17 @@ def _json_context_wrapper(func):
     return render
 
 
+def _regex_capture(rx, s):
+    m = re.search(rx, s)
+    if m:
+        return m.groupdict()
+    return {}
+
+
 def load_native_callbacks(env):
-    callbacks = {}
+    callbacks = {
+        'regex/capture': (('regex', 'str'), _regex_capture),
+    }
     for name in env.render_plugin_loader.list():
         renderer = env.load_renderer(name)
         callbacks['render/{}.render'.format(name)] = (
@@ -107,6 +116,9 @@ class Renderer:
         if rel == 'enkube/env':
             return rel, self.env.to_json()
 
+        elif rel == 'enkube/regex':
+            return rel, self._regex_obj()
+
         elif rel.startswith('enkube/render/'):
             name = rel.split('/', 1)[1]
             return rel, self._renderer_obj(name)
@@ -139,6 +151,11 @@ class Renderer:
             except FileNotFoundError:
                 continue
         raise RuntimeError('file not found')
+
+    def _regex_obj(self):
+        return '''{
+            capture(regex, str):: std.native("regex/capture")(regex, str)
+        }'''
 
     def _renderer_obj(self, name):
         return '''{{
