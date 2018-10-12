@@ -40,13 +40,17 @@ local k = import "enkube/k";
     },
   },
 
+  ClusterIssuer(name, server, email):: $.Issuer(name, server, email) {
+    kind: "ClusterIssuer",
+  } + k.ClusterScoped,
+
   /*
     Let's Encrypt Staging Issuer (certmanager)
 
     Required arguments:
       email: The email address of the registering user.
   */
-  LetsEncryptStaging(email):: $.Issuer(
+  LetsEncryptStaging(email):: $.ClusterIssuer(
     "letsencrypt-staging", "https://acme-staging-v02.api.letsencrypt.org/directory", email
   ),
 
@@ -56,7 +60,7 @@ local k = import "enkube/k";
     Required arguments:
       email: The email address of the registering user.
   */
-  LetsEncryptProd(email):: $.Issuer(
+  LetsEncryptProd(email):: $.ClusterIssuer(
     "letsencrypt-prod", "https://acme-v02.api.letsencrypt.org/directory", email
   ),
 
@@ -93,4 +97,6 @@ local k = import "enkube/k";
         },
       },
     },
+
+  CertClusterIssuer: { spec+: { issuerRef+: { kind: "ClusterIssuer" } } },
 }
