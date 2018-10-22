@@ -441,7 +441,8 @@ class Api:
         if not (await self.get_resourceKind(
             obj['apiVersion'], obj['kind']
         ))['namespaced']:
-            del obj['metadata']['namespace']
+            if 'namespace' in obj['metadata']:
+                del obj['metadata']['namespace']
         return obj
 
     @sync_wrap
@@ -467,9 +468,19 @@ class Api:
             else:
                 kinds = [kind]
             for k in kinds:
+                if (
+                    namespace and not
+                    (await self.get_resourceKind(apiVersion, k))['namespaced']
+                ):
+                    continue
                 path = await self.build_path(
                     apiVersion, k, namespace, name, **kwargs)
-                res = await self.get(path, last_applied=last_applied)
+                try:
+                    res = await self.get(path, last_applied=last_applied)
+                except ApiError as e:
+                    if e.resp.status_code in (404, 405):
+                        continue
+                    raise
                 if res.get('kind', '').endswith('List'):
                     for obj in res.get('items', []):
                         if last_applied:
@@ -477,8 +488,6 @@ class Api:
                         else:
                             obj = dict(obj, apiVersion=apiVersion, kind=k)
                         yield obj
-                elif res.get('code') == 404:
-                    continue
                 else:
                     yield res
 
@@ -490,7 +499,6 @@ class Api:
         self.log.debug(f'post {path}')
         return await self.client.post(path, json=obj)
 
-    @sync_wrap
     def ref_to_path(self, ref):
         md = ref.get('metadata', {})
         return self.build_path(
