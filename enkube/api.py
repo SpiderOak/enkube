@@ -38,6 +38,190 @@ from .enkube import pass_env
 LOG = logging.getLogger(__name__)
 
 
+class KubeObjProxy:
+    def __init__(self, obj):
+        self.__dict__['obj'] = obj
+
+    def __getattr__(self, attr):
+        if attr in self.obj:
+            v = self.obj[attr]
+            if isinstance(v, dict):
+                return KubeObjProxy(v)
+            elif isinstance(v, list):
+                return KubeListProxy(v)
+            return v
+        raise AttributeError(attr)
+
+    def __setattr__(self, attr, value):
+        self.obj[attr] = value
+
+    def __delattr__(self, attr):
+        del self.obj[attr]
+
+
+class KubeListProxy:
+    def __init__(self, l):
+        self.__dict__['l'] = l
+
+    def __len__(self):
+        return len(self.l)
+
+    def __getitem__(self, idx):
+        v = self.l[idx]
+        if isinstance(v, dict):
+            return KubeObjProxy(v)
+        elif isinstance(v, list):
+            return KubeListProxy(v)
+        return v
+
+    def __setitem__(self, idx, value):
+        self.l[idx] = value
+
+    def __delitem__(self, idx):
+        del self.l[idx]
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+
+class KubeObjType(type):
+    def __init__(cls, name, bases, attrs):
+        super(KubeObjType, cls).__init__(name, bases, attrs)
+        if name in ('KubeObj', 'KubeCRD'):
+            return
+
+        for b in bases:
+            if isinstance(b, KubeObjType):
+                registry = b._registry
+                break
+        else:
+            raise TypeError(f'{cls.__name__!r} is not a KubeObj subclass')
+
+        try:
+            k = (cls.apiVersion, cls.kind)
+        except AttributeError:
+            raise TypeError('KubeObj subclasses must have apiVersion and kind') from None
+
+        if k in registry:
+            raise TypeError(f'KubeObj kind {k} already registered')
+
+        registry[k] = cls
+
+
+class ValidationError(ValueError):
+    pass
+
+
+class KubeObj(metaclass=KubeObjType):
+    _registry = {}
+
+    def __getattr__(self, attr):
+        return KubeObjProxy(self.kubeObj).__getattr__(attr)
+
+    @classmethod
+    def from_api(cls, obj, api=None):
+        k = (obj['apiVersion'], obj['kind'])
+        if cls is KubeObj and k in cls._registry:
+            cls = cls._registry[k]
+            for b in cls.__mro__:
+                if 'from_api' in b.__dict__:
+                    return b.__dict__['from_api'].__get__(None, cls)(obj, api)
+            raise AttributeError(f"{cls.__name__!r} object has no attribute 'from_api'")
+
+        cls.validate(obj)
+        self = object.__new__(cls)
+        self.api = api
+        self.kubeObj = obj
+        return self
+
+    @classmethod
+    def validate(cls, obj):
+        try:
+            md = obj['metadata']
+        except KeyError:
+            raise ValidationError('object has no metadata') from None
+        if 'name' not in md:
+            raise ValidationError('object has no name')
+        if cls in (KubeObj, KubeCRD):
+            return
+        if obj.get('apiVersion') != cls.apiVersion:
+            raise ValidationError('apiVersion mismatch')
+        if obj.get('kind') != cls.kind:
+            raise ValidationError('kind mismatch')
+        if not cls.namespaced and md.get('namespace'):
+            raise ValidationError('namespace defined on cluster-scoped object')
+        if cls.namespaced and not md.get('namespace'):
+            raise ValidationError('namespace not defined on namespaced object')
+
+    @property
+    def name(self):
+        return self.metadata.name
+
+    @name.setter
+    def name(self, value):
+        self.metadata.name = value
+
+    @property
+    def namespace(self):
+        return self.metadata.namespace
+
+    @namespace.setter
+    def namespace(self, value):
+        self.metadata.namespace = value
+
+
+class _default_descr:
+    def __init__(self, default_cb):
+        self.default_cb = default_cb
+
+    def __set_name__(self, cls, name):
+        self.name = name
+
+    def __get__(self, inst, cls):
+        try:
+            return cls.__dict__[self.name]
+        except KeyError:
+            return self.default_cb(cls)
+
+
+class KubeCRD(KubeObj):
+    kind = _default_descr(lambda cls: cls.__name__)
+    singular = _default_descr(lambda cls: cls.kind.lower())
+    plural = _default_descr(lambda cls: f'{cls.singular}s')
+    shortNames = _default_descr(lambda cls: [])
+
+    class crd:
+        def __get__(self, inst, cls):
+            g, v = cls.apiVersion.split('/', 1)
+            return {
+                'apiVersion': 'apiextensions.k8s.io/v1beta1',
+                'kind': 'CustomResourceDefinition',
+                'metadata': {
+                    'name': f'{cls.plural}.{g}',
+                },
+                'spec': {
+                    'group': g,
+                    'version': v,
+                    'scope': 'Namespaced' if cls.namespaced else 'Cluster',
+                    'names': {
+                        'kind': cls.kind,
+                        'singular': cls.singular,
+                        'plural': cls.plural,
+                        'shortNames': cls.shortNames,
+                    },
+                    #'validation': {
+                    #    'openAPIV3Schema': { 'properties': { 'spec': { 'properties': {
+                    #    } } } }
+                    #},
+                },
+                'subresources': {
+                    'status': {},
+                },
+            }
+    crd = crd()
+
+
 class ProxyManager:
     log = LOG.getChild('ProxyManager')
 
@@ -499,6 +683,12 @@ class Api:
             path = path.rsplit('/', 1)[0]
         self.log.debug(f'post {path}')
         return await self.client.post(path, json=obj)
+
+    @sync_wrap
+    async def replace(self, obj):
+        path = await self.ref_to_path(obj)
+        self.log.debug(f'put {path}')
+        return await self.client.put(path, json=obj)
 
     @sync_wrap
     async def patch(self, ref, patch):
