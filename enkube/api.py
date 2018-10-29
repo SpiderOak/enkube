@@ -38,7 +38,7 @@ from .enkube import pass_env
 LOG = logging.getLogger(__name__)
 
 
-class KubeObjProxy:
+class KubeDictProxy:
     def __init__(self, obj):
         self.__dict__['obj'] = obj
 
@@ -46,7 +46,7 @@ class KubeObjProxy:
         if attr in self.obj:
             v = self.obj[attr]
             if isinstance(v, dict):
-                return KubeObjProxy(v)
+                return KubeDictProxy(v)
             elif isinstance(v, list):
                 return KubeListProxy(v)
             return v
@@ -69,7 +69,7 @@ class KubeListProxy:
     def __getitem__(self, idx):
         v = self.l[idx]
         if isinstance(v, dict):
-            return KubeObjProxy(v)
+            return KubeDictProxy(v)
         elif isinstance(v, list):
             return KubeListProxy(v)
         return v
@@ -85,26 +85,26 @@ class KubeListProxy:
             yield self[i]
 
 
-class KubeObjType(type):
+class KubeKindType(type):
     def __init__(cls, name, bases, attrs):
-        super(KubeObjType, cls).__init__(name, bases, attrs)
-        if name in ('KubeObj', 'KubeCRD'):
+        super(KubeKindType, cls).__init__(name, bases, attrs)
+        if name in ('KubeKind', 'KubeCRD'):
             return
 
         for b in bases:
-            if isinstance(b, KubeObjType):
+            if isinstance(b, KubeKindType):
                 registry = b._registry
                 break
         else:
-            raise TypeError(f'{cls.__name__!r} is not a KubeObj subclass')
+            raise TypeError(f'{cls.__name__!r} is not a KubeKind subclass')
 
         try:
             k = (cls.apiVersion, cls.kind)
         except AttributeError:
-            raise TypeError('KubeObj subclasses must have apiVersion and kind') from None
+            raise TypeError('KubeKind subclasses must have apiVersion and kind') from None
 
         if k in registry:
-            raise TypeError(f'KubeObj kind {k} already registered')
+            raise TypeError(f'KubeKind kind {k} already registered')
 
         registry[k] = cls
 
@@ -113,16 +113,16 @@ class ValidationError(ValueError):
     pass
 
 
-class KubeObj(metaclass=KubeObjType):
+class KubeKind(metaclass=KubeKindType):
     _registry = {}
 
     def __getattr__(self, attr):
-        return KubeObjProxy(self.kubeObj).__getattr__(attr)
+        return KubeDictProxy(self.kubeObj).__getattr__(attr)
 
     @classmethod
     def from_api(cls, obj, api=None):
         k = (obj['apiVersion'], obj['kind'])
-        if cls is KubeObj and k in cls._registry:
+        if cls is KubeKind and k in cls._registry:
             cls = cls._registry[k]
             for b in cls.__mro__:
                 if 'from_api' in b.__dict__:
@@ -143,7 +143,7 @@ class KubeObj(metaclass=KubeObjType):
             raise ValidationError('object has no metadata') from None
         if 'name' not in md:
             raise ValidationError('object has no name')
-        if cls in (KubeObj, KubeCRD):
+        if cls in (KubeKind, KubeCRD):
             return
         if obj.get('apiVersion') != cls.apiVersion:
             raise ValidationError('apiVersion mismatch')
@@ -185,7 +185,7 @@ class _default_descr:
             return self.default_cb(cls)
 
 
-class KubeCRD(KubeObj):
+class KubeCRD(KubeKind):
     kind = _default_descr(lambda cls: cls.__name__)
     singular = _default_descr(lambda cls: cls.kind.lower())
     plural = _default_descr(lambda cls: f'{cls.singular}s')
