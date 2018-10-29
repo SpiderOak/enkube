@@ -213,6 +213,7 @@ class ApiClient:
     head = partialmethod(request, 'HEAD')
     post = partialmethod(request, 'POST')
     put = partialmethod(request, 'PUT')
+    patch = partialmethod(request, 'PATCH')
     delete = partialmethod(request, 'DELETE')
     options = partialmethod(request, 'OPTIONS')
 
@@ -498,6 +499,14 @@ class Api:
             path = path.rsplit('/', 1)[0]
         self.log.debug(f'post {path}')
         return await self.client.post(path, json=obj)
+
+    @sync_wrap
+    async def patch(self, ref, patch):
+        path = await self.ref_to_path(ref)
+        self.log.debug(f'patch {path}')
+        return await self.client.patch(path, json=patch, headers={
+            'Content-type': 'application/merge-patch+json',
+        })
 
     def ref_to_path(self, ref):
         md = ref.get('metadata', {})
