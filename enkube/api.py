@@ -19,6 +19,7 @@ import logging
 import tempfile
 from urllib.parse import quote_plus
 from functools import partialmethod
+from copy import deepcopy
 
 import click
 import curio
@@ -38,188 +39,251 @@ from .enkube import pass_env
 LOG = logging.getLogger(__name__)
 
 
-class KubeDictProxy:
-    def __init__(self, obj):
-        self.__dict__['obj'] = obj
-
-    def __getattr__(self, attr):
-        if attr in self.obj:
-            v = self.obj[attr]
-            if isinstance(v, dict):
-                return KubeDictProxy(v)
-            elif isinstance(v, list):
-                return KubeListProxy(v)
-            return v
-        raise AttributeError(attr)
-
-    def __setattr__(self, attr, value):
-        self.obj[attr] = value
-
-    def __delattr__(self, attr):
-        del self.obj[attr]
-
-
-class KubeListProxy:
-    def __init__(self, l):
-        self.__dict__['l'] = l
-
-    def __len__(self):
-        return len(self.l)
-
-    def __getitem__(self, idx):
-        v = self.l[idx]
-        if isinstance(v, dict):
-            return KubeDictProxy(v)
-        elif isinstance(v, list):
-            return KubeListProxy(v)
-        return v
-
-    def __setitem__(self, idx, value):
-        self.l[idx] = value
-
-    def __delitem__(self, idx):
-        del self.l[idx]
-
-    def __iter__(self):
-        for i in range(len(self)):
-            yield self[i]
-
-
-class KubeKindType(type):
-    def __init__(cls, name, bases, attrs):
-        super(KubeKindType, cls).__init__(name, bases, attrs)
-        if name in ('KubeKind', 'KubeCRD'):
-            return
-
-        for b in bases:
-            if isinstance(b, KubeKindType):
-                registry = b._registry
-                break
-        else:
-            raise TypeError(f'{cls.__name__!r} is not a KubeKind subclass')
-
-        try:
-            k = (cls.apiVersion, cls.kind)
-        except AttributeError:
-            raise TypeError('KubeKind subclasses must have apiVersion and kind') from None
-
-        if k in registry:
-            raise TypeError(f'KubeKind kind {k} already registered')
-
-        registry[k] = cls
-
-
-class ValidationError(ValueError):
+class ValidationError(Exception):
     pass
 
 
-class KubeKind(metaclass=KubeKindType):
-    _registry = {}
+class ValidationTypeError(ValidationError, TypeError):
+    pass
 
-    def __getattr__(self, attr):
-        return KubeDictProxy(self.kubeObj).__getattr__(attr)
+
+class ValidationValueError(ValidationError, ValueError):
+    pass
+
+
+def required(typ):
+    if isinstance(typ, tuple):
+        typ, flags = typ
+        return typ, set(flags) | {'required'}
+    return typ, {'required'}
+
+
+def list_of(typ):
+    if isinstance(typ, tuple):
+        typ, flags = typ
+        return typ, set(flags) | {'list'}
+    return typ, {'list'}
+
+
+class KubeObjectType(type):
+    _allowed_flags = {'required', 'list'}
+
+    def __new__(cls, name, bases, attrs):
+        __annotations__ = dict(
+            (field, (typ, flags))
+            for b in bases
+            for field, (typ, flags) in getattr(b, '__annotations__', {}).items()
+        )
+        _defaults = dict(i for b in bases for i in getattr(b, '_defaults', {}).items())
+        for field, typ in attrs.get('__annotations__', {}).items():
+            if isinstance(typ, tuple):
+                typ, flags = typ
+                flags = set(flags)
+            else:
+                flags = set()
+
+            if not isinstance(typ, type):
+                raise TypeError(f'{field}: annotation must be a type')
+
+            unknown_flags = flags - cls._allowed_flags
+            if unknown_flags:
+                raise ValueError(f'{field}: unknown annotation flags: {unknown_flags}')
+
+            __annotations__[field] = typ, flags
+
+            if field in attrs:
+                default = _defaults[field] = attrs[field]
+                if not isinstance(default, typ):
+                    raise TypeError(f'default value for field {field} is of incorrect type')
+
+        attrs['__annotations__'] = __annotations__
+        attrs['_defaults'] = _defaults
+
+        if not bases:
+            bases = (dict,)
+
+        return type.__new__(cls, name, bases, attrs)
+
+
+class KubeObject(metaclass=KubeObjectType):
+    def __new__(cls, *args, **kw):
+        inst = super(KubeObject, cls).__new__(cls)
+        inst.update(deepcopy(cls._defaults))
+        return inst
+
+    def __init__(self, **kw):
+        self.update(kw)
+        self._validate()
 
     @classmethod
-    def from_api(cls, obj, api=None):
-        k = (obj['apiVersion'], obj['kind'])
-        if cls is KubeKind and k in cls._registry:
-            cls = cls._registry[k]
-            for b in cls.__mro__:
-                if 'from_api' in b.__dict__:
-                    return b.__dict__['from_api'].__get__(None, cls)(obj, api)
-            raise AttributeError(f"{cls.__name__!r} object has no attribute 'from_api'")
+    def _from_dict(cls, *args, **kw):
+        if len(args) > 1:
+            raise TypeError(
+                f'{cls.__name__}.from_dict expected at most 1 arguments, got {len(args)}')
+        inst = cls.__new__(cls)
+        if args:
+            inst.update(args[0])
+        if kw:
+            inst.update(kw)
+        for k in inst:
+            typ, flags = cls.__annotations__.get(k, (None, None))
+            if not isinstance(typ, KubeObjectType):
+                continue
+            v = inst[k]
+            if 'list' in flags:
+                if not isinstance(v, list):
+                    continue
+                inst[k] = [typ._from_dict(i) for i in v]
+            else:
+                if not isinstance(v, dict):
+                    continue
+                inst[k] = typ._from_dict(v)
+        inst._validate()
+        return inst
 
-        cls.validate(obj)
-        self = object.__new__(cls)
-        self.api = api
-        self.kubeObj = obj
-        return self
+    def _validate_field_types(self):
+        for attr, (typ, flags) in type(self).__annotations__.items():
+            if 'required' in flags and attr not in self:
+                raise ValidationValueError(f'{attr} is a required field')
+            if attr not in self:
+                continue
 
-    @classmethod
-    def validate(cls, obj):
-        try:
-            md = obj['metadata']
-        except KeyError:
-            raise ValidationError('object has no metadata') from None
-        if 'name' not in md:
-            raise ValidationError('object has no name')
-        if cls in (KubeKind, KubeCRD):
-            return
-        if obj.get('apiVersion') != cls.apiVersion:
-            raise ValidationError('apiVersion mismatch')
-        if obj.get('kind') != cls.kind:
-            raise ValidationError('kind mismatch')
-        if not cls.namespaced and md.get('namespace'):
-            raise ValidationError('namespace defined on cluster-scoped object')
-        if cls.namespaced and not md.get('namespace'):
-            raise ValidationError('namespace not defined on namespaced object')
+            val = self[attr]
 
-    @property
-    def name(self):
-        return self.metadata.name
+            if 'list' in flags:
+                if not isinstance(val, list):
+                    raise ValidationTypeError(
+                        f'expected {attr} to be an instance of type '
+                        f'list, got {type(val).__name__}'
+                    )
 
-    @name.setter
-    def name(self, value):
-        self.metadata.name = value
+                for i, item in enumerate(val):
+                    if not isinstance(item, typ):
+                        raise ValidationTypeError(
+                            f'expected {attr} to be a list of {typ.__name__} instances, '
+                            f'but item {i} is an instance of {type(item).__name__}'
+                        )
+                    validate = getattr(item, '_validate_field_types', None)
+                    if validate:
+                        validate()
 
-    @property
-    def namespace(self):
-        return self.metadata.namespace
+            elif not isinstance(val, typ):
+                raise ValidationTypeError(
+                    f'expected {attr} to be an instance of type '
+                    f'{typ.__name__}, got {type(val).__name__}'
+                )
 
-    @namespace.setter
-    def namespace(self, value):
-        self.metadata.namespace = value
+            validate = getattr(val, '_validate_field_types', None)
+            if validate:
+                validate()
+
+    def _validate(self):
+        self._validate_field_types()
+
+    def __getattr__(self, key):
+        if key in self.__annotations__:
+            try:
+                return self[key]
+            except KeyError:
+                pass
+        raise AttributeError(key)
+
+    def __setattr__(self, key, value):
+        if key in self.__annotations__:
+            self[key] = value
+        else:
+            super(KubeObject, self).__setattr__(key, value)
+
+    def __delattr__(self, key):
+        if key in self.__annotations__:
+            try:
+                del self[key]
+            except KeyError:
+                pass
+        super(KubeObject, self).__delattr__(key)
 
 
-class _default_descr:
-    def __init__(self, default_cb):
-        self.default_cb = default_cb
-
-    def __set_name__(self, cls, name):
-        self.name = name
-
-    def __get__(self, inst, cls):
-        try:
-            return cls.__dict__[self.name]
-        except KeyError:
-            return self.default_cb(cls)
+class ObjectMeta(KubeObject):
+    # this is not exhaustive
+    name: required(str)
+    namespace: str
+    annotations: dict
+    finalizers: list_of(str)
+    labels: dict
+    resourceVersion: str
+    selfLink: str
+    uid: str
 
 
-class KubeCRD(KubeKind):
-    kind = _default_descr(lambda cls: cls.__name__)
-    singular = _default_descr(lambda cls: cls.kind.lower())
-    plural = _default_descr(lambda cls: f'{cls.singular}s')
-    shortNames = _default_descr(lambda cls: [])
+class KindType(KubeObjectType):
+    def __new__(cls, name, bases, attrs):
+        if 'kind' not in attrs:
+            attrs['kind'] = name
+        return super(KindType, cls).__new__(cls, name, bases, attrs)
 
-    class crd:
+
+class Kind(KubeObject, metaclass=KindType):
+    _namespaced = True
+    apiVersion: required(str)
+    kind: required(str)
+    metadata: required(ObjectMeta)
+
+    def _validate(self):
+        super(Kind, self)._validate()
+        typ = type(self)
+        ns = getattr(self.metadata, 'namespace', None)
+        if typ._namespaced:
+            if not ns:
+                raise ValidationValueError(
+                    f'{typ.__name__} objects must have a namespace')
+        else:
+            if ns:
+                raise ValidationValueError(
+                    f'namespace specified but {typ.__name__} objects are cluster-scoped')
+
+
+class CRDType(KindType):
+    def __init__(self, name, bases, attrs):
+        super(CRDType, self).__init__(name, bases, attrs)
+        if '_singular' not in attrs:
+            self._singular = self.kind.lower()
+        if '_plural' not in attrs:
+            self._plural = f'{self._singular}s'
+        if '_shortNames' not in attrs:
+            self._shortNames = []
+
+
+class CRD(Kind, metaclass=CRDType):
+    class _crd:
         def __get__(self, inst, cls):
             g, v = cls.apiVersion.split('/', 1)
-            return {
+            crd = {
                 'apiVersion': 'apiextensions.k8s.io/v1beta1',
                 'kind': 'CustomResourceDefinition',
                 'metadata': {
-                    'name': f'{cls.plural}.{g}',
+                    'name': f'{cls._plural}.{g}',
                 },
                 'spec': {
                     'group': g,
                     'version': v,
-                    'scope': 'Namespaced' if cls.namespaced else 'Cluster',
+                    'scope': 'Namespaced' if cls._namespaced else 'Cluster',
                     'names': {
                         'kind': cls.kind,
-                        'singular': cls.singular,
-                        'plural': cls.plural,
-                        'shortNames': cls.shortNames,
+                        'singular': cls._singular,
+                        'plural': cls._plural,
+                        'shortNames': cls._shortNames,
                     },
                     #'validation': {
                     #    'openAPIV3Schema': { 'properties': { 'spec': { 'properties': {
                     #    } } } }
                     #},
                 },
-                'subresources': {
-                    'status': {},
-                },
             }
-    crd = crd()
+            subresources = getattr(cls, '_subresources', None)
+            if subresources:
+                crd['subresources'] = subresources
+            return crd
+    _crd = _crd()
 
 
 class ProxyManager:
@@ -697,6 +761,12 @@ class Api:
         return await self.client.patch(path, json=patch, headers={
             'Content-type': 'application/merge-patch+json',
         })
+
+    @sync_wrap
+    async def delete(self, obj):
+        path = await self.ref_to_path(obj)
+        self.log.debug(f'delete {path}')
+        await self.client.delete(path)
 
     def ref_to_path(self, ref):
         md = ref.get('metadata', {})
