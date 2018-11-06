@@ -80,6 +80,9 @@ class BaseHandler(metaclass=HandlerType):
     crds = ()
     click_params = ()
 
+    async def spawn_controller_tasks(self, g):
+        pass
+
 
 class Controller:
     '''Dispatch API events to handlers. Create CRDs.'''
@@ -113,6 +116,8 @@ class Controller:
             async with curio.TaskGroup(wait=any) as g:
                 await g.spawn(self._crd_task)
                 await g.spawn(self._watch_task)
+                for handler in self.handlers:
+                    await handler.spawn_controller_tasks(g)
                 shutdown_task = await g.spawn(shutdown_event.wait)
 
         except Exception:
