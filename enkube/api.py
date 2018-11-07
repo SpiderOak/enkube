@@ -432,6 +432,14 @@ class ApiError(Exception):
         self.resp = resp
 
 
+class ApiVersionNotFoundError(ApiError):
+    pass
+
+
+class ResourceKindNotFoundError(ApiError):
+    pass
+
+
 class ApiClient:
     _max_conns = 20
 
@@ -604,9 +612,12 @@ class Api:
     async def get_apiVersion(self, apiVersion):
         if apiVersion not in self._ver_cache:
             path = await self.build_path(apiVersion)
-            v = await self.get(path)
-            if v.get('code') == 404:
-                raise ValueError(f'apiVersion {apiVersion} not found on server')
+            try:
+                v = await self.get(path)
+            except ApiError as err:
+                if err.resp.status_code == 404:
+                    raise ApiVersionNotFoundError(err.resp) from None
+                raise
             if v.get('kind') != 'APIResourceList':
                 raise RuntimeError('unexpected response from server')
             for r in v['resources']:
@@ -628,7 +639,7 @@ class Api:
         try:
             return self._kind_cache[apiVersion, kind]
         except KeyError:
-            raise ValueError(f'resource kind {kind} not found on server')
+            raise ResourceKindNotFoundError(None) from None
 
     @sync_wrap
     async def build_path(
