@@ -65,7 +65,7 @@ def list_of(typ):
     return typ, {'list'}
 
 
-class KubeObjectType(type):
+class KubeDictType(type):
     _allowed_flags = {'required', 'list'}
 
     def __new__(cls, name, bases, attrs):
@@ -74,8 +74,9 @@ class KubeObjectType(type):
             for b in bases
             for field, (typ, flags) in getattr(b, '__annotations__', {}).items()
         )
+        __annotations__.update(attrs.get('__annotations__', {}))
         _defaults = dict(i for b in bases for i in getattr(b, '_defaults', {}).items())
-        for field, typ in attrs.get('__annotations__', {}).items():
+        for field, typ in __annotations__.items():
             if isinstance(typ, tuple):
                 typ, flags = typ
                 flags = set(flags)
@@ -93,7 +94,13 @@ class KubeObjectType(type):
 
             if field in attrs:
                 default = _defaults[field] = attrs[field]
-                if not isinstance(default, typ):
+                if 'list' in flags:
+                    if not isinstance(default, list):
+                        raise TypeError(f'default value for field {field} is of incorrect type')
+                    for i in default:
+                        if not isinstance(i, typ):
+                            raise TypeError(f'default value for field {field} is of incorrect type')
+                elif not isinstance(default, typ):
                     raise TypeError(f'default value for field {field} is of incorrect type')
 
         attrs['__annotations__'] = __annotations__
@@ -105,41 +112,24 @@ class KubeObjectType(type):
         return type.__new__(cls, name, bases, attrs)
 
 
-class KubeObject(metaclass=KubeObjectType):
-    def __new__(cls, *args, **kw):
-        inst = super(KubeObject, cls).__new__(cls)
-        inst.update(deepcopy(cls._defaults))
-        return inst
-
-    def __init__(self, **kw):
-        self.update(kw)
-        self._validate()
-
-    @classmethod
-    def _from_dict(cls, *args, **kw):
-        if len(args) > 1:
-            raise TypeError(
-                f'{cls.__name__}.from_dict expected at most 1 arguments, got {len(args)}')
-        inst = cls.__new__(cls)
-        if args:
-            inst.update(args[0])
-        if kw:
-            inst.update(kw)
-        for k in inst:
-            typ, flags = cls.__annotations__.get(k, (None, None))
-            if not isinstance(typ, KubeObjectType):
+class KubeDict(metaclass=KubeDictType):
+    def __init__(self, *args, **kw):
+        cls = type(self)
+        self.update(deepcopy(cls._defaults))
+        self.update(dict(*args, **kw))
+        for k, (typ, flags) in cls.__annotations__.items():
+            if k not in self:
                 continue
-            v = inst[k]
+            v = self[k]
             if 'list' in flags:
                 if not isinstance(v, list):
                     continue
-                inst[k] = [typ._from_dict(i) for i in v]
+                for i, o in enumerate(v):
+                    if not isinstance(o, typ):
+                        v[i] = typ(o)
             else:
-                if not isinstance(v, dict):
-                    continue
-                inst[k] = typ._from_dict(v)
-        inst._validate()
-        return inst
+                if not isinstance(v, typ):
+                    self[k] = typ(v)
 
     def _validate_field_types(self):
         for attr, (typ, flags) in type(self).__annotations__.items():
@@ -180,19 +170,16 @@ class KubeObject(metaclass=KubeObjectType):
     def _validate(self):
         self._validate_field_types()
 
-    def __getattr__(self, key):
-        if key in self.__annotations__:
-            try:
-                return self[key]
-            except KeyError:
-                pass
-        raise AttributeError(key)
+    def __getattribute__(self, key):
+        if not key.startswith('_') and key in self:
+            return self[key]
+        return super(KubeDict, self).__getattribute__(key)
 
     def __setattr__(self, key, value):
         if key in self.__annotations__:
             self[key] = value
         else:
-            super(KubeObject, self).__setattr__(key, value)
+            super(KubeDict, self).__setattr__(key, value)
 
     def __delattr__(self, key):
         if key in self.__annotations__:
@@ -200,10 +187,10 @@ class KubeObject(metaclass=KubeObjectType):
                 del self[key]
             except KeyError:
                 pass
-        super(KubeObject, self).__delattr__(key)
+        super(KubeDict, self).__delattr__(key)
 
 
-class ObjectMeta(KubeObject):
+class ObjectMeta(KubeDict):
     # this is not exhaustive
     name: required(str)
     namespace: str
@@ -215,14 +202,14 @@ class ObjectMeta(KubeObject):
     uid: str
 
 
-class KindType(KubeObjectType):
+class KindType(KubeDictType):
     def __new__(cls, name, bases, attrs):
         if 'kind' not in attrs:
             attrs['kind'] = name
         return super(KindType, cls).__new__(cls, name, bases, attrs)
 
 
-class Kind(KubeObject, metaclass=KindType):
+class Kind(KubeDict, metaclass=KindType):
     _namespaced = True
     apiVersion: required(str)
     kind: required(str)
@@ -242,48 +229,55 @@ class Kind(KubeObject, metaclass=KindType):
                     f'namespace specified but {typ.__name__} objects are cluster-scoped')
 
 
-class CRDType(KindType):
-    def __init__(self, name, bases, attrs):
-        super(CRDType, self).__init__(name, bases, attrs)
-        if '_singular' not in attrs:
-            self._singular = self.kind.lower()
-        if '_plural' not in attrs:
-            self._plural = f'{self._singular}s'
-        if '_shortNames' not in attrs:
-            self._shortNames = []
+class CustomResourceDefinitionNames(KubeDict):
+    kind: required(str)
+    singular: required(str)
+    plural: required(str)
+    shortNames: required(list_of(str)) = []
 
 
-class CRD(Kind, metaclass=CRDType):
-    class _crd:
-        def __get__(self, inst, cls):
-            g, v = cls.apiVersion.split('/', 1)
-            crd = {
-                'apiVersion': 'apiextensions.k8s.io/v1beta1',
-                'kind': 'CustomResourceDefinition',
-                'metadata': {
-                    'name': f'{cls._plural}.{g}',
+class CustomResourceDefinitionSpec(KubeDict):
+    group: required(str)
+    version: required(str)
+    scope: required(str)
+    names: required(CustomResourceDefinitionNames)
+    subresources: dict
+
+
+class CustomResourceDefinition(Kind):
+    _namespaced = False
+    apiVersion = 'apiextensions.k8s.io/v1beta1'
+    spec: required(CustomResourceDefinitionSpec)
+
+    @classmethod
+    def _from_kind(cls, kind):
+        g, v = kind.apiVersion.split('/', 1)
+        singular = getattr(kind, '_singular', kind.kind.lower())
+        plural = getattr(kind, '_plural', f'{singular}s')
+        shortNames = getattr(kind, '_shortNames', [])
+        crd = cls({
+            'metadata': { 'name': f'{plural}.{g}', },
+            'spec': {
+                'group': g,
+                'version': v,
+                'scope': 'Namespaced' if kind._namespaced else 'Cluster',
+                'names': {
+                    'kind': kind.kind,
+                    'singular': singular,
+                    'plural': plural,
+                    'shortNames': shortNames,
                 },
-                'spec': {
-                    'group': g,
-                    'version': v,
-                    'scope': 'Namespaced' if cls._namespaced else 'Cluster',
-                    'names': {
-                        'kind': cls.kind,
-                        'singular': cls._singular,
-                        'plural': cls._plural,
-                        'shortNames': cls._shortNames,
-                    },
-                    #'validation': {
-                    #    'openAPIV3Schema': { 'properties': { 'spec': { 'properties': {
-                    #    } } } }
-                    #},
-                },
-            }
-            subresources = getattr(cls, '_subresources', None)
-            if subresources:
-                crd['subresources'] = subresources
-            return crd
-    _crd = _crd()
+                #'validation': {
+                #    'openAPIV3Schema': { 'properties': { 'spec': { 'properties': {
+                #    } } } }
+                #},
+            },
+        })
+        subresources = getattr(kind, '_subresources', None)
+        if subresources:
+            crd['subresources'] = subresources
+        crd._validate()
+        return crd
 
 
 class ProxyManager:
