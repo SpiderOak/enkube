@@ -171,7 +171,9 @@ class KubeDict(metaclass=KubeDictType):
         self._validate_field_types()
 
     def __getattribute__(self, key):
-        if not key.startswith('_') and key in self:
+        if not key.startswith('_') and not (
+            key == 'items' and self.get('kind', '').endswith('List')
+        ) and key in self:
             return self[key]
         return super(KubeDict, self).__getattribute__(key)
 
