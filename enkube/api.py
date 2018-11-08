@@ -705,7 +705,7 @@ class Api:
         obj = await self.client.get(path)
         if last_applied:
             obj = await self.last_applied(obj)
-        return obj
+        return Kind(obj)
 
     @sync_wrap
     async def list(
@@ -751,27 +751,27 @@ class Api:
         if obj.get('metadata', {}).get('name'):
             path = path.rsplit('/', 1)[0]
         self.log.debug(f'post {path}')
-        return await self.client.post(path, json=obj)
+        return Kind(await self.client.post(path, json=obj))
 
     @sync_wrap
     async def replace(self, obj):
         path = await self.ref_to_path(obj)
         self.log.debug(f'put {path}')
-        return await self.client.put(path, json=obj)
+        return Kind(await self.client.put(path, json=obj))
 
     @sync_wrap
     async def patch(self, ref, patch):
         path = await self.ref_to_path(ref)
         self.log.debug(f'patch {path}')
-        return await self.client.patch(path, json=patch, headers={
+        return Kind(await self.client.patch(path, json=patch, headers={
             'Content-type': 'application/merge-patch+json',
-        })
+        }))
 
     @sync_wrap
     async def delete(self, obj):
         path = await self.ref_to_path(obj)
         self.log.debug(f'delete {path}')
-        await self.client.delete(path)
+        return Kind(await self.client.delete(path))
 
     def ref_to_path(self, ref):
         md = ref.get('metadata', {})
@@ -813,7 +813,7 @@ class Api:
         path = await self.build_path(**kw)
         async with finalize(self.stream(path)) as stream:
             async for event in stream:
-                yield event['type'], event['object']
+                yield event['type'], Kind(event['object'])
                 if event['type'] == 'ERROR':
                     return
 
