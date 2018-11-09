@@ -14,9 +14,9 @@
 
 import click
 
-from .enkube import pass_env
 from .util import format_yaml, close_kernel
-from .api import Api
+from .api.client_old import Api
+from .main import pass_env
 
 
 @click.command()

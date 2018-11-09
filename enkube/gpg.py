@@ -18,8 +18,8 @@ import subprocess
 from collections import OrderedDict
 import click
 
-from .enkube import pass_env
 from .util import format_json, load_yaml
+from .main import pass_env
 
 
 class GPGError(RuntimeError):

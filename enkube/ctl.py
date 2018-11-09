@@ -16,7 +16,7 @@ import os
 import subprocess
 import click
 
-from .enkube import pass_env
+from .main import pass_env
 
 
 def kubectl_popen(env, args, **kwargs):

@@ -24,7 +24,7 @@ from functools import update_wrapper
 import requests
 import click
 
-from .enkube import pass_env
+from .main import pass_env
 
 
 SEARCH_EXTS = ['.jsonnet']

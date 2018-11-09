@@ -17,9 +17,9 @@ from urllib.parse import quote
 import click
 
 from .util import flatten_kube_lists, format_json, close_kernel
-from .enkube import pass_env
-from .api import Api
 from .ctl import kubectl_popen
+from .api import Api
+from .main import pass_env
 
 
 @click.command(

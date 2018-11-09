@@ -15,54 +15,10 @@
 import os
 import json
 import logging
-import pkg_resources
 
-import click
-
-from .log import init_logging
+from .plugins import RenderPluginLoader
 
 LOG = logging.getLogger(__name__)
-
-
-class PluginLoader:
-    @property
-    def _entrypoints(self):
-        if '_entrypoints' not in self.__dict__:
-            self.__dict__['_entrypoints'] = dict(
-                (ep.name, ep) for ep in
-                pkg_resources.iter_entry_points(self.entrypoint_type)
-            )
-        return self.__dict__['_entrypoints']
-
-    def list(self):
-        return self._entrypoints.keys()
-
-    def load(self, name):
-        if '_plugins' not in self.__dict__:
-            self.__dict__['_plugins'] = {}
-        if name not in self._plugins:
-            try:
-                self._plugins[name] = self._entrypoints[name].load()
-            except KeyError:
-                return None
-        return self._plugins[name]
-
-    def load_all(self):
-        return [self.load(name) for name in self.list()]
-
-
-class CommandPluginLoader(click.MultiCommand, PluginLoader):
-    entrypoint_type = 'enkube.commands'
-
-    def list_commands(self, ctx):
-        return self.list()
-
-    def get_command(self, ctx, name):
-        return self.load(name)
-
-
-class RenderPluginLoader(PluginLoader):
-    entrypoint_type = 'enkube.renderers'
 
 
 class Environment:
@@ -152,21 +108,3 @@ class Environment:
 
     def to_json(self):
         return json.dumps(self.to_dict())
-
-
-pass_env = click.make_pass_decorator(Environment, ensure=True)
-
-
-@click.command(cls=CommandPluginLoader)
-@click.option('--env', '-e', envvar='ENKUBE_ENV')
-@click.option('--search', '-J', multiple=True, type=click.Path(), envvar='ENKUBE_SEARCH')
-@click.option('-v', '--verbose', count=True)
-@click.pass_context
-def cli(ctx, env, search, verbose):
-    '''Manage Kubernetes manifests.'''
-    init_logging(logging.WARNING - 10 * verbose)
-    ctx.obj = Environment(env, search)
-
-
-if __name__ == '__main__':
-    cli()

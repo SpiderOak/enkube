@@ -19,7 +19,7 @@ setup(
     packages=['enkube'],
     entry_points={
         'console_scripts': [
-            'enkube = enkube.enkube:cli',
+            'enkube = enkube.main:cli',
         ],
         'enkube.commands': [
             'render = enkube.render:cli',
@@ -36,5 +36,6 @@ setup(
         'enkube.renderers': [
             'jinja2 = enkube.jinja2:Renderer'
         ],
-    }
+    },
+    test_suite='enkube.test',
 )

@@ -20,9 +20,10 @@ import signal
 import click
 import curio
 
-from .api import Api, MultiWatch
 from .util import close_kernel, sync_wrap
-from .enkube import pass_env, PluginLoader
+from .plugins import PluginLoader
+from .api.client_old import Api, MultiWatch
+from .main import pass_env
 
 LOG = logging.getLogger(__name__)
 
