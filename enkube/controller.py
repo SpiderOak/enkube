@@ -178,8 +178,12 @@ class Controller:
                         f'error while watching for events: {err}')
 
     async def _handle(self, state, event, obj):
-        path = await self.api.ref_to_path(obj)
-        v = obj.get('metadata', {}).get('resourceVersion')
+        md = obj.get('metadata', {})
+        if 'selfLink' in md:
+            path = md['selfLink']
+        else:
+            path = await self.api.ref_to_path(obj)
+        v = md.get('resourceVersion')
 
         if path not in state or state[path] != v:
             try:

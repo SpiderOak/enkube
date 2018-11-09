@@ -220,7 +220,7 @@ class Kind(KubeDict, metaclass=KindType):
     def _validate(self):
         super(Kind, self)._validate()
         typ = type(self)
-        ns = getattr(self.metadata, 'namespace', None)
+        ns = self.metadata.get('namespace')
         if typ._namespaced:
             if not ns:
                 raise ValidationValueError(

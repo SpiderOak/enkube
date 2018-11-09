@@ -18,7 +18,6 @@ WORKDIR /install
 COPY requirements.txt /enkube/requirements.txt
 
 RUN pip install -U pip \
-&& apk update \
 && apk add --no-cache --virtual=build-dependencies \
     build-base \
     curl \
