@@ -21,13 +21,9 @@ from unittest.mock import patch, MagicMock, sentinel
 import curio
 from curio import subprocess
 
-from .util import AsyncTestCase, apatch
+from .util import AsyncTestCase, apatch, dummy_coro
 
 from enkube.api import client
-
-
-async def dummy_coro(*args, **kw):
-    pass
 
 
 class TestApiClient(AsyncTestCase):

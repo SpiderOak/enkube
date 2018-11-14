@@ -66,3 +66,7 @@ def apatch(*args, **kw):
                 return await func(*args, m, **kw)
         return wrapped
     return wrapper
+
+
+async def dummy_coro(*args, **kw):
+    pass

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import sys
 import json
 import yaml
@@ -26,6 +27,7 @@ from pygments import highlight, lexers, formatters
 import curio
 from curio.meta import (
     curio_running, _from_coroutine, _isasyncgenfunction, finalize)
+from curio.monitor import Monitor
 
 
 def load_yaml(stream, Loader=yaml.SafeLoader, object_pairs_hook=OrderedDict):
@@ -84,6 +86,11 @@ def get_kernel():
         return _locals.curio_kernel
     except AttributeError:
         _locals.curio_kernel = k = curio.Kernel()
+
+        if 'CURIOMONITOR' in os.environ:
+            m = Monitor(k)
+            k._call_at_shutdown(m.close)
+
         return k
 
 
