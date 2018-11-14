@@ -135,7 +135,7 @@ def sync_wrap(asyncfunc):
             if _from_coroutine() or curio_running():
                 return asyncfunc(*args, **kwargs)
             else:
-                return get_kernel().run(asyncfunc, *args, **kwargs)
+                return get_kernel().run(asyncfunc(*args, **kwargs))
 
     wrapped._awaitable = True
     return wrapped
@@ -147,3 +147,37 @@ class AsyncInstanceType(curio.meta.AsyncInstanceType):
 
 class AsyncObject(metaclass=AsyncInstanceType):
     pass
+
+
+class SyncIterWrapper:
+    _sentinel = object()
+
+    def __init__(self, aiter):
+        self._aiter = aiter
+
+    @sync_wrap
+    async def _anext(self):
+        try:
+            return await self._aiter.__anext__()
+        except StopAsyncIteration:
+            return self._sentinel
+
+    def __next__(self):
+        item = self._anext()
+        if item is self._sentinel:
+            raise StopIteration()
+        return item
+
+class SyncIter:
+    def __iter__(self):
+        return SyncIterWrapper(self.__aiter__())
+
+
+class SyncContextManager:
+    @sync_wrap
+    async def __enter__(self):
+        return await self.__aenter__()
+
+    @sync_wrap
+    async def __exit__(self, typ, val, tb):
+        return await self.__aexit__(typ, val, tb)

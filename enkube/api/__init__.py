@@ -18,7 +18,8 @@ import click
 
 from ..util import format_json, format_python, close_kernel
 from ..main import pass_env
-from .client_old import Api, MultiWatch
+from .client import ApiClient
+from .client_old import MultiWatch
 
 
 def displayhook(value):
@@ -50,7 +51,7 @@ def cli(env):
     old_displayhook = sys.displayhook
     sys.displayhook = displayhook
     try:
-        with Api(env) as api:
+        with ApiClient(env) as api:
             context = {
                 'api': api,
                 'MultiWatch': MultiWatch,

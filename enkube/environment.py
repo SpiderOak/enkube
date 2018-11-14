@@ -16,6 +16,8 @@ import os
 import json
 import logging
 
+from curio import subprocess
+
 from .plugins import RenderPluginLoader
 
 LOG = logging.getLogger(__name__)
@@ -90,6 +92,17 @@ class Environment:
         if p:
             envvars['KUBECONFIG'] = p
         return envvars
+
+    def spawn_kubectl(self, args, **kw):
+        args = [self.get_kubectl_path()] + list(args)
+        env = self.get_kubectl_environ()
+        if 'env' in kw:
+            env.update(kw['env'])
+        kw['env'] = env
+        self.log.debug(f'running {" ".join(args)}')
+        p = subprocess.Popen(args, **kw)
+        self.log.debug(f'kubectl pid {p.pid}')
+        return p
 
     def gpgsecret_keyid(self):
         for d in self.search_dirs():
