@@ -23,7 +23,49 @@ from curio import subprocess
 
 from .util import AsyncTestCase, apatch, dummy_coro
 
+from enkube.api.types import *
 from enkube.api import client
+
+
+class TestStreamIter(AsyncTestCase):
+    def setUp(self):
+        self.objects = [
+            {'foo': 1},
+            {'bar': 2},
+            {'baz': 3},
+        ]
+        class aiter:
+            async def __anext__(it):
+                try:
+                    return self.chunks.pop(0)
+                except IndexError:
+                    raise StopAsyncIteration() from None
+        async def close_coro():
+            pass
+        self.resp = MagicMock()
+        self.resp.body.__aiter__ = aiter
+        self.resp.body.close.side_effect = close_coro
+        self.si = client.StreamIter(self.resp)
+
+    def test_iter(self):
+        self.chunks = [b'\n'.join(json.dumps(o).encode('utf-8') for o in self.objects)]
+        self.assertEqual(list(self.si), self.objects)
+
+    def test_iter_with_trailing_newline(self):
+        self.chunks = [b'\n'.join(json.dumps(o).encode('utf-8') for o in self.objects) + b'\n']
+        self.assertEqual(list(self.si), self.objects)
+
+    def test_iter_chunks(self):
+        s = b'\n'.join(json.dumps(o).encode('utf-8') for o in self.objects)
+        n = s.find(b'\n') + 3
+        self.chunks = [s[:n], s[n:]]
+        self.assertEqual(list(self.si), self.objects)
+
+    def test_context_manager(self):
+        with self.si as ret:
+            pass
+        self.assertIs(ret, self.si)
+        self.resp.body.close.assert_called_once_with()
 
 
 class TestApiClient(AsyncTestCase):
@@ -368,46 +410,145 @@ class TestApiClient(AsyncTestCase):
         ses.request.assert_called_once_with(method='GET', path='/', foo='bar', stream=True)
         si.assert_called_once_with(resp)
 
+    async def test_get_apiversion_v1(self):
+        v = {
+            'apiVersion': 'v1',
+            'kind': 'APIResourceList',
+            'groupVersion': 'v1',
+            'resources': [
+                {
+                    'kind': 'FooKind',
+                    'name': 'foos',
+                    'singularName': '',
+                    'namespaced': True,
+                    'verbs': ['get', 'list'],
+                },
+            ],
+        }
+        async def get_coro(*args, **kw):
+            return v
+        self.api.get = MagicMock(side_effect=get_coro)
+        res = await self.api._get_apiVersion('v1')
+        self.api.get.assert_called_once_with('/api/v1')
+        self.assertTrue(isinstance(res, APIResourceList))
+        self.assertEqual(res, v)
+        self.assertIs(res, self.api._apiVersion_cache['/api/v1'])
+        self.assertEqual(self.api._kind_cache['v1', 'FooKind'], v['resources'][0])
 
-class TestStreamIter(AsyncTestCase):
-    def setUp(self):
-        self.objects = [
-            {'foo': 1},
-            {'bar': 2},
-            {'baz': 3},
-        ]
-        class aiter:
-            async def __anext__(it):
-                try:
-                    return self.chunks.pop(0)
-                except IndexError:
-                    raise StopAsyncIteration() from None
-        async def close_coro():
-            pass
-        self.resp = MagicMock()
-        self.resp.body.__aiter__ = aiter
-        self.resp.body.close.side_effect = close_coro
-        self.si = client.StreamIter(self.resp)
+    async def test_get_apiversion(self):
+        v = {
+            'apiVersion': 'v1',
+            'kind': 'APIResourceList',
+            'groupVersion': 'v1',
+            'resources': [
+                {
+                    'kind': 'FooKind',
+                    'name': 'foos',
+                    'singularName': '',
+                    'namespaced': True,
+                    'verbs': ['get', 'list'],
+                },
+            ],
+        }
+        async def get_coro(*args, **kw):
+            return v
+        self.api.get = MagicMock(side_effect=get_coro)
+        res = await self.api._get_apiVersion('apps/v1')
+        self.api.get.assert_called_once_with('/apis/apps/v1')
+        self.assertTrue(isinstance(res, APIResourceList))
+        self.assertEqual(res, v)
+        self.assertIs(res, self.api._apiVersion_cache['/apis/apps/v1'])
+        self.assertEqual(self.api._kind_cache['apps/v1', 'FooKind'], v['resources'][0])
 
-    def test_iter(self):
-        self.chunks = [b'\n'.join(json.dumps(o).encode('utf-8') for o in self.objects)]
-        self.assertEqual(list(self.si), self.objects)
+    async def test_get_apiversion_cached(self):
+        self.api.get = MagicMock()
+        self.api._apiVersion_cache['/apis/apps/v1'] = sentinel.result
+        res = await self.api._get_apiVersion('apps/v1')
+        self.api.get.assert_not_called()
+        self.assertIs(res, sentinel.result)
 
-    def test_iter_with_trailing_newline(self):
-        self.chunks = [b'\n'.join(json.dumps(o).encode('utf-8') for o in self.objects) + b'\n']
-        self.assertEqual(list(self.si), self.objects)
+    async def test_get_apiversion_apierror(self):
+        async def get_coro(*args, **kw):
+            raise client.ApiError(MagicMock(status_code=400))
+        self.api.get = MagicMock(side_effect=get_coro)
+        with self.assertRaises(client.ApiError) as err:
+            await self.api._get_apiVersion('apps/v1')
+        self.assertIs(err.exception.reason, None)
 
-    def test_iter_chunks(self):
-        s = b'\n'.join(json.dumps(o).encode('utf-8') for o in self.objects)
-        n = s.find(b'\n') + 3
-        self.chunks = [s[:n], s[n:]]
-        self.assertEqual(list(self.si), self.objects)
+    async def test_get_apiversion_not_found(self):
+        async def get_coro(*args, **kw):
+            raise client.ApiError(MagicMock(status_code=404))
+        self.api.get = MagicMock(side_effect=get_coro)
+        with self.assertRaises(client.ApiError) as err:
+            await self.api._get_apiVersion('apps/v1')
+        self.assertEqual(err.exception.reason, 'apiVersion not found')
 
-    def test_context_manager(self):
-        with self.si as ret:
-            pass
-        self.assertIs(ret, self.si)
-        self.resp.body.close.assert_called_once_with()
+    async def test_get_resourcekind(self):
+        v = {
+            'apiVersion': 'v1',
+            'kind': 'APIResourceList',
+            'groupVersion': 'v1',
+            'resources': [
+                {
+                    'kind': 'FooKind',
+                    'name': 'foos',
+                    'singularName': '',
+                    'namespaced': True,
+                    'verbs': ['get', 'list'],
+                },
+            ],
+        }
+        async def get_coro(*args, **kw):
+            return v
+        self.api.get = MagicMock(side_effect=get_coro)
+        res = await self.api._get_resourceKind('apps/v1', 'FooKind')
+        self.api.get.assert_called_once_with('/apis/apps/v1')
+        self.assertEqual(res, v['resources'][0])
+        self.assertTrue(isinstance(res, APIResource))
+
+    async def test_get_resourcekind_not_found(self):
+        v = {
+            'apiVersion': 'v1',
+            'kind': 'APIResourceList',
+            'groupVersion': 'v1',
+            'resources': [
+                {
+                    'kind': 'FooKind',
+                    'name': 'foos',
+                    'singularName': '',
+                    'namespaced': True,
+                    'verbs': ['get', 'list'],
+                },
+            ],
+        }
+        async def get_coro(*args, **kw):
+            return v
+        self.api.get = MagicMock(side_effect=get_coro)
+        with self.assertRaises(client.ApiError) as err:
+            await self.api._get_resourceKind('apps/v1', 'BarKind')
+        self.assertEqual(err.exception.reason, 'resource kind not found')
+
+    async def test_get_resourcekind_ignores_subresources(self):
+        v = {
+            'apiVersion': 'v1',
+            'kind': 'APIResourceList',
+            'groupVersion': 'v1',
+            'resources': [
+                {
+                    'kind': 'FooKind',
+                    'name': 'foos/status',
+                    'singularName': '',
+                    'namespaced': True,
+                    'verbs': ['get', 'list'],
+                },
+            ],
+        }
+        async def get_coro(*args, **kw):
+            return v
+        self.api.get = MagicMock(side_effect=get_coro)
+        with self.assertRaises(client.ApiError) as err:
+            await self.api._get_resourceKind('apps/v1', 'FooKind')
+        self.assertEqual(err.exception.reason, 'resource kind not found')
 
 
 if __name__ == '__main__':

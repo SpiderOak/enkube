@@ -19,7 +19,7 @@ import click
 from ..util import format_json, format_python, close_kernel
 from ..main import pass_env
 from .client import ApiClient
-from .client_old import MultiWatch
+from .watcher import Watch, Watcher
 
 
 def displayhook(value):
@@ -54,7 +54,8 @@ def cli(env):
         with ApiClient(env) as api:
             context = {
                 'api': api,
-                'MultiWatch': MultiWatch,
+                'Watcher': Watcher,
+                'Watch': Watch,
             }
             shell = code.InteractiveConsole(context)
             shell.interact()

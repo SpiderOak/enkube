@@ -14,6 +14,8 @@
 
 from copy import deepcopy
 
+from ..util import sync_wrap
+
 
 class ValidationError(Exception):
     pass
@@ -256,3 +258,18 @@ class CustomResourceDefinition(Kind):
             crd['subresources'] = subresources
         crd._validate()
         return crd
+
+
+class APIResource(KubeDict):
+    kind: required(str)
+    name: required(str)
+    namespaced: required(bool)
+    singularName: required(str)
+    verbs: required(list_of(str))
+
+
+class APIResourceList(KubeDict):
+    apiVersion: required(str) = 'v1'
+    kind: required(str) = 'APIResourceList'
+    groupVersion: required(str)
+    resources: required(list_of(APIResource))

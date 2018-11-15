@@ -62,13 +62,14 @@ class Watch:
         return self, event
 
 
-class Watcher:
+class Watcher(SyncIter):
     def __init__(self, api):
         self.api = api
         self._watches = set()
         self._closed = False
         self._taskgroup = curio.TaskGroup()
 
+    @sync_wrap
     async def watch(self, path):
         if self._closed:
             raise RuntimeError('Watcher is closed')
@@ -76,6 +77,7 @@ class Watcher:
         await watch._spawn()
         return watch
 
+    @sync_wrap
     async def cancel(self):
         self._closed = True
         for w in list(self._watches):

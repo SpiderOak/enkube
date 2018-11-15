@@ -25,6 +25,7 @@ import asks
 asks.init('curio')
 
 from ..util import sync_wrap, SyncIter, SyncContextManager
+from .types import APIResourceList
 
 LOG = logging.getLogger(__name__)
 
@@ -97,6 +98,8 @@ class ApiClient(SyncContextManager):
         self._closed = False
         self._startup_lock = curio.Lock()
         self._poll_lock = curio.Lock()
+        self._apiVersion_cache = {}
+        self._kind_cache = {}
 
     async def _poll_proxy(self, wait=False):
         async with self._poll_lock:
@@ -211,3 +214,27 @@ class ApiClient(SyncContextManager):
     patch = partialmethod(request, 'PATCH')
     delete = partialmethod(request, 'DELETE')
     options = partialmethod(request, 'OPTIONS')
+
+    async def _get_apiVersion(self, apiVersion):
+        path = f"/api{'' if apiVersion == 'v1' else 's'}/{apiVersion}"
+        if path not in self._apiVersion_cache:
+            try:
+                res = APIResourceList(await self.get(path))
+            except ApiError as err:
+                if err.resp.status_code == 404:
+                    err.reason = 'apiVersion not found'
+                raise
+            res._validate()
+            self._apiVersion_cache[path] = res
+            self._kind_cache.update(dict(
+                ((apiVersion, r['kind']), r) for r in res.resources
+                if '/' not in r['name']
+            ))
+        return self._apiVersion_cache[path]
+
+    async def _get_resourceKind(self, apiVersion, kind):
+        await self._get_apiVersion(apiVersion)
+        try:
+            return self._kind_cache[apiVersion, kind]
+        except KeyError:
+            raise ApiError(reason='resource kind not found') from None
