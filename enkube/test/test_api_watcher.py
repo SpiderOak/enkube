@@ -30,6 +30,7 @@ class FakeStreamIter:
         return self
 
     async def __anext__(self):
+        await curio.sleep(0)
         try:
             return self.items.pop(0)
         except IndexError:
@@ -68,22 +69,26 @@ class TestWatch(AsyncTestCase):
         self.assertEqual([self.watch._current_task], self.spawned_tasks)
         self.assertEqual(self.watches, {self.watch})
 
+    async def test_spawn_while_closed(self):
+        self.watch._closed = True
+        await self.watch._spawn()
+        self.taskgroup.spawn.assert_not_called()
+        self.assertEqual(self.watches, set())
+
     async def test_get_next_without_stream(self):
         self.stream.items.append(sentinel.event)
         res = await self.watch._get_next()
-        self.assertIs(res, sentinel.event)
+        self.assertIs(res[0], self.watch)
+        self.assertIs(res[1], sentinel.event)
         self.api.get.assert_called_once_with(sentinel.path, stream=True)
-        self.taskgroup.spawn.assert_called_once_with(self.watch._get_next)
-        self.assertEqual([self.watch._current_task], self.spawned_tasks)
 
     async def test_get_next_with_stream(self):
         self.stream.items.append(sentinel.event)
         self.watch._stream = self.stream
         res = await self.watch._get_next()
-        self.assertIs(res, sentinel.event)
+        self.assertIs(res[0], self.watch)
+        self.assertIs(res[1], sentinel.event)
         self.api.get.assert_not_called()
-        self.taskgroup.spawn.assert_called_once_with(self.watch._get_next)
-        self.assertEqual([self.watch._current_task], self.spawned_tasks)
 
     async def test_get_next_restarts_after_stream_finishes(self):
         streams = [
@@ -94,26 +99,20 @@ class TestWatch(AsyncTestCase):
             return streams.pop(0)
         self.api.get.side_effect = stream_coro
         res = await self.watch._get_next()
-        self.assertIs(res, sentinel.event)
+        self.assertIs(res[0], self.watch)
+        self.assertIs(res[1], sentinel.event)
         self.assertEqual(self.api.get.call_args_list, [
             ((sentinel.path,), {'stream': True}),
             ((sentinel.path,), {'stream': True}),
         ])
-        self.taskgroup.spawn.assert_called_once_with(self.watch._get_next)
-        self.assertEqual([self.watch._current_task], self.spawned_tasks)
-
-    async def test_get_next_does_not_respawn_when_closed(self):
-        self.watch._closed = True
-        res = await self.watch._get_next()
-        self.assertIs(res, None)
-        self.taskgroup.spawn.assert_not_called()
 
     async def test_get_next_returns_none_when_blocked_on_stream_and_canceled(self):
         self.stream = BlockingStreamIter()
         self.watch._current_task = t = await curio.spawn(self.watch._get_next)
         await curio.sleep(0)
         await self.watch.cancel()
-        self.assertIs(t.result, None)
+        self.assertIs(t.result[0], self.watch)
+        self.assertIs(t.result[1], None)
 
     async def test_get_next_returns_none_when_blocked_on_get_and_canceled(self):
         async def block_coro(*args, **kw):
@@ -122,7 +121,8 @@ class TestWatch(AsyncTestCase):
         self.watch._current_task = t = await curio.spawn(self.watch._get_next)
         await curio.sleep(0)
         await self.watch.cancel()
-        self.assertIs(t.result, None)
+        self.assertIs(t.result[0], self.watch)
+        self.assertIs(t.result[1], None)
 
     async def test_cancel(self):
         await self.watch.cancel()
@@ -146,6 +146,7 @@ class TestWatcher(AsyncTestCase):
     def setUp(self):
         self.events = [('SENTINEL', None)]
         async def stream_coro(*args, **kw):
+            await curio.sleep(0)
             return FakeStreamIter([
                 {'type': event, 'object': obj} for event, obj in self.events
             ])
@@ -211,11 +212,13 @@ class TestWatcher(AsyncTestCase):
         await self.watcher.watch('/bar')
         res = []
         async for event, obj in self.watcher:
-            if len(res) == 2:
+            if len(res) == 4:
                 await self.watcher.cancel()
                 break
             res.append((event, obj))
         self.assertEqual(res, [
+            ('FOO', '/foo'),
+            ('FOO', '/bar'),
             ('FOO', '/foo'),
             ('FOO', '/bar'),
         ])
@@ -226,10 +229,13 @@ class TestWatcher(AsyncTestCase):
         self.api.get.side_effect = get_coro
         w1 = await self.watcher.watch('/foo')
         w2 = await self.watcher.watch('/bar')
-        await curio.sleep(0)
+        while self.watcher._taskgroup._running:
+            await curio.sleep(0)
         await w2.cancel()
         res = []
         async for event, obj in self.watcher:
+            while self.watcher._taskgroup._running:
+                await curio.sleep(0)
             await w1.cancel()
             res.append((event, obj))
         self.assertEqual(res, [

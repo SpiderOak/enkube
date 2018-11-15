@@ -39,6 +39,8 @@ class Watch:
         self._watches.discard(self)
 
     async def _spawn(self):
+        if self._closed:
+            return
         self._watches.add(self)
         self._current_task = await self._taskgroup.spawn(self._get_next)
 
@@ -54,13 +56,10 @@ class Watch:
                 except StopAsyncIteration:
                     self._stream = None
 
-            if not self._closed:
-                await self._spawn()
-
         except curio.CancelledError:
             pass
 
-        return event
+        return self, event
 
 
 class Watcher:
@@ -69,20 +68,10 @@ class Watcher:
         self._watches = set()
         self._closed = False
         self._taskgroup = curio.TaskGroup()
-        self._watchdog_task = None
-
-    async def _watchdog(self):
-        try:
-            await curio.Event().wait()
-        finally:
-            self._watchdog_task = None
-            await self.cancel()
 
     async def watch(self, path):
         if self._closed:
             raise RuntimeError('Watcher is closed')
-        if not self._watchdog_task:
-            self._watchdog_task = await curio.spawn(self._watchdog)
         watch = Watch(self.api, self._watches, self._taskgroup, path)
         await watch._spawn()
         return watch
@@ -99,9 +88,13 @@ class Watcher:
     async def __anext__(self):
         while True:
             task = await self._taskgroup.next_done()
-            if not task or not task.result:
-                raise StopAsyncIteration()
+            if not task:
+                break
             try:
-                return task.result['type'], task.result['object']
+                watch, event = task.result
             except curio.CancelledError:
-                pass
+                continue
+            if event:
+                await watch._spawn()
+                return event['type'], event['object']
+        raise StopAsyncIteration()
