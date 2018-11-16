@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from copy import deepcopy
+from urllib.parse import urlencode
 
 from ..util import sync_wrap
 
@@ -186,6 +187,12 @@ class KindType(KubeDictType):
     def __new__(cls, name, bases, attrs):
         if 'kind' not in attrs:
             attrs['kind'] = name
+        if '_singular' not in attrs:
+            attrs['_singular'] = attrs['kind'].lower()
+        if '_plural' not in attrs:
+            attrs['_plural'] = f"{attrs['_singular']}s"
+        if '_shortNames' not in attrs:
+            attrs['_shortNames'] = []
         return super(KindType, cls).__new__(cls, name, bases, attrs)
 
 
@@ -207,6 +214,44 @@ class Kind(KubeDict, metaclass=KindType):
             if ns:
                 raise ValidationValueError(
                     f'namespace specified but {typ.__name__} objects are cluster-scoped')
+
+    def _selfLink(self, verb=None):
+        if 'selfLink' in self.metadata:
+            l = self.metadata['selfLink']
+            if not verb:
+                return l
+            return l.replace(f'/{self.apiVersion}/', f'/{self.apiVersion}/{verb}/', 1)
+
+        return self._makeLink(
+            name=self.metadata['name'],
+            namespace=self.metadata.get('namespace'),
+            verb=verb
+        )
+
+    @classmethod
+    def _makeLink(cls, name=None, namespace=None, verb=None, **kw):
+        components = [
+            '',
+            'apis' if '/' in cls.apiVersion else 'api',
+            cls.apiVersion,
+        ]
+        if verb:
+            components.append(verb)
+        if namespace:
+            if cls._namespaced:
+                components.extend(['namespaces', namespace])
+            else:
+                raise ValueError('cannot specify namespace for cluster-scoped resource')
+        components.append(cls._plural)
+        query = {}
+        if name:
+            if namespace or not cls._namespaced:
+                components.append(name)
+            else:
+                query['fieldSelector'] = f'metadata.name={name}'
+        query.update(kw)
+        query = ('?' + urlencode(query, safe='=')) if query else ''
+        return '/'.join(components) + query
 
 
 class CustomResourceDefinitionNames(KubeDict):
@@ -232,9 +277,6 @@ class CustomResourceDefinition(Kind):
     @classmethod
     def _from_kind(cls, kind):
         g, v = kind.apiVersion.split('/', 1)
-        singular = getattr(kind, '_singular', kind.kind.lower())
-        plural = getattr(kind, '_plural', f'{singular}s')
-        shortNames = getattr(kind, '_shortNames', [])
         crd = cls({
             'metadata': { 'name': f'{plural}.{g}', },
             'spec': {
@@ -243,9 +285,9 @@ class CustomResourceDefinition(Kind):
                 'scope': 'Namespaced' if kind._namespaced else 'Cluster',
                 'names': {
                     'kind': kind.kind,
-                    'singular': singular,
-                    'plural': plural,
-                    'shortNames': shortNames,
+                    'singular': kind._singular,
+                    'plural': kind._plural,
+                    'shortNames': kind._shortNames,
                 },
                 #'validation': {
                 #    'openAPIV3Schema': { 'properties': { 'spec': { 'properties': {
