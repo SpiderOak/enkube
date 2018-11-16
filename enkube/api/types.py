@@ -15,8 +15,6 @@
 from copy import deepcopy
 from urllib.parse import urlencode
 
-from ..util import sync_wrap
-
 
 class ValidationError(Exception):
     pass
@@ -202,8 +200,7 @@ class Kind(KubeDict, metaclass=KindType):
     kind: required(str)
     metadata: required(ObjectMeta)
 
-    def _validate(self):
-        super(Kind, self)._validate()
+    def _validate_namespace(self):
         typ = type(self)
         ns = self.metadata.get('namespace')
         if typ._namespaced:
@@ -215,6 +212,10 @@ class Kind(KubeDict, metaclass=KindType):
                 raise ValidationValueError(
                     f'namespace specified but {typ.__name__} objects are cluster-scoped')
 
+    def _validate(self):
+        super(Kind, self)._validate()
+        self._validate_namespace()
+
     def _selfLink(self, verb=None):
         if 'selfLink' in self.metadata:
             l = self.metadata['selfLink']
@@ -222,6 +223,7 @@ class Kind(KubeDict, metaclass=KindType):
                 return l
             return l.replace(f'/{self.apiVersion}/', f'/{self.apiVersion}/{verb}/', 1)
 
+        self._validate_namespace()
         return self._makeLink(
             name=self.metadata['name'],
             namespace=self.metadata.get('namespace'),

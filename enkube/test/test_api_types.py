@@ -67,10 +67,25 @@ class TestKind(unittest.TestCase):
         self.assertEqual(
             o._selfLink(), '/apis/testing.enkube.local/v1/namespaces/foo/mynamespacedkinds/bar')
 
+    def test_selflink_makelink_namespaced_without_namespace_raises_validationerror(self):
+        o = MyNamespacedKind(metadata={'name': 'bar'})
+        with self.assertRaises(types.ValidationValueError) as err:
+            o._selfLink()
+        self.assertEqual(err.exception.args[0], 'MyNamespacedKind objects must have a namespace')
+
     def test_selflink_makelink_cluster(self):
         o = MyClusterKind(metadata={'name': 'bar'})
         self.assertEqual(
             o._selfLink(), '/apis/testing.enkube.local/v1/myclusterkinds/bar')
+
+    def test_selflink_makelink_cluster_with_namespace_raises_validationerror(self):
+        o = MyClusterKind(metadata={'namespace': 'foo', 'name': 'bar'})
+        with self.assertRaises(types.ValidationValueError) as err:
+            o._selfLink()
+        self.assertEqual(
+            err.exception.args[0],
+            'namespace specified but MyClusterKind objects are cluster-scoped'
+        )
 
     def test_makelink_namespaced(self):
         self.assertEqual(
