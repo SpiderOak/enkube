@@ -162,6 +162,7 @@ class TestWatcher(AsyncTestCase):
         self.assertTrue(isinstance(watch, watcher.Watch))
         self.assertEqual(watch.path, '/foobar')
         self.watcher._taskgroup.spawn.assert_called_once_with(watch._get_next)
+        self.api.get.assert_called_once_with('/foobar', stream=True)
 
     async def test_watch_after_cancel_raises_runtimeerror(self):
         await self.watcher.cancel()

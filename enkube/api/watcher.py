@@ -38,9 +38,14 @@ class Watch:
             self._current_task = None
         self._watches.discard(self)
 
+    async def _get_stream(self):
+        if self._stream is None:
+            self._stream = await self.api.get(self.path, stream=True)
+
     async def _spawn(self):
         if self._closed:
             return
+        await self._get_stream()
         self._watches.add(self)
         self._current_task = await self._taskgroup.spawn(self._get_next)
 
@@ -48,8 +53,7 @@ class Watch:
         event = None
         try:
             while not self._closed:
-                if self._stream is None:
-                    self._stream = await self.api.get(self.path, stream=True)
+                await self._get_stream()
                 try:
                     event = await self._stream.__anext__()
                     break
