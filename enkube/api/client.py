@@ -25,7 +25,7 @@ import asks
 asks.init('curio')
 
 from ..util import sync_wrap, SyncIter, SyncContextManager
-from .types import APIResourceList
+from .types import APIResourceList, Kind
 
 LOG = logging.getLogger(__name__)
 
@@ -238,3 +238,8 @@ class ApiClient(SyncContextManager):
             return self._kind_cache[apiVersion, kind]
         except KeyError:
             raise ApiError(reason='resource kind not found') from None
+
+    @sync_wrap
+    async def getKind(self, apiVersion, kind):
+        res = await self._get_resourceKind(apiVersion, kind)
+        return Kind.from_apiresource(apiVersion, res)

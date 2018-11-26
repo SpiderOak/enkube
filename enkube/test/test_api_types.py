@@ -19,16 +19,21 @@ from enkube.api import types
 
 
 class TestKindType(unittest.TestCase):
+    def setUp(self):
+        types.Kind.instances.clear()
+
     def test_new_defaults(self):
         class MyKind(types.Kind):
-            pass
+            apiVersion = 'v1'
         self.assertEqual(MyKind.kind, 'MyKind')
         self.assertEqual(MyKind._singular, 'mykind')
         self.assertEqual(MyKind._plural, 'mykinds')
         self.assertEqual(MyKind._shortNames, [])
+        self.assertIs(types.Kind.getKind('v1', 'MyKind'), MyKind)
 
     def test_new(self):
         class MyKind(types.Kind):
+            apiVersion = 'v1'
             kind = 'FooBar'
             _singular = 'barfoo'
             _plural = 'foobaren'
@@ -37,6 +42,51 @@ class TestKindType(unittest.TestCase):
         self.assertEqual(MyKind._singular, 'barfoo')
         self.assertEqual(MyKind._plural, 'foobaren')
         self.assertEqual(MyKind._shortNames, ['fb'])
+        self.assertIs(types.Kind.getKind('v1', 'FooBar'), MyKind)
+
+    def test_from_apiresource(self):
+        r = types.APIResource(
+            kind='MyKind',
+            name='mykinds',
+            namespaced=True,
+            singularName='',
+            verbs=['get'],
+        )
+        k = types.Kind.from_apiresource('v1', r)
+        self.assertEqual(k.kind, 'MyKind')
+        self.assertEqual(k._singular, '')
+        self.assertEqual(k._plural, 'mykinds')
+        self.assertEqual(k._shortNames, [])
+        self.assertEqual(k._namespaced, True)
+        self.assertIs(types.Kind.getKind('v1', 'MyKind'), k)
+
+    def test_from_apiresource_cluster(self):
+        r = types.APIResource(
+            kind='MyKind',
+            name='mykinds',
+            namespaced=False,
+            singularName='',
+            verbs=['get'],
+        )
+        k = types.Kind.from_apiresource('v1', r)
+        self.assertEqual(k.kind, 'MyKind')
+        self.assertEqual(k._singular, '')
+        self.assertEqual(k._plural, 'mykinds')
+        self.assertEqual(k._shortNames, [])
+        self.assertEqual(k._namespaced, False)
+        self.assertIs(types.Kind.getKind('v1', 'MyKind'), k)
+
+    def test_from_apiresource_cached(self):
+        r = types.APIResource(
+            kind='MyKind',
+            name='mykinds',
+            namespaced=True,
+            singularName='',
+            verbs=['get'],
+        )
+        k1 = types.Kind.from_apiresource('v1', r)
+        k2 = types.Kind.from_apiresource('v1', r)
+        self.assertIs(k1, k2)
 
 
 class MyNamespacedKind(types.Kind):

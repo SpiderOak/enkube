@@ -169,6 +169,22 @@ class KubeDict(metaclass=KubeDictType):
         super(KubeDict, self).__delattr__(key)
 
 
+class APIResource(KubeDict):
+    kind: required(str)
+    name: required(str)
+    namespaced: required(bool)
+    shortNames: list_of(str)
+    singularName: required(str)
+    verbs: required(list_of(str))
+
+
+class APIResourceList(KubeDict):
+    apiVersion: required(str) = 'v1'
+    kind: required(str) = 'APIResourceList'
+    groupVersion: required(str)
+    resources: required(list_of(APIResource))
+
+
 class ObjectMeta(KubeDict):
     # this is not exhaustive
     name: required(str)
@@ -182,6 +198,8 @@ class ObjectMeta(KubeDict):
 
 
 class KindType(KubeDictType):
+    instances = {}
+
     def __new__(cls, name, bases, attrs):
         if 'kind' not in attrs:
             attrs['kind'] = name
@@ -191,7 +209,29 @@ class KindType(KubeDictType):
             attrs['_plural'] = f"{attrs['_singular']}s"
         if '_shortNames' not in attrs:
             attrs['_shortNames'] = []
-        return super(KindType, cls).__new__(cls, name, bases, attrs)
+        inst = super(KindType, cls).__new__(cls, name, bases, attrs)
+        if hasattr(inst, 'apiVersion') and hasattr(inst, 'kind'):
+            cls.instances[inst.apiVersion, inst.kind] = inst
+        return inst
+
+    @classmethod
+    def getKind(cls, apiVersion, kind):
+        return cls.instances[apiVersion, kind]
+
+    @classmethod
+    def from_apiresource(cls, apiVersion, resource):
+        try:
+            return cls.getKind(apiVersion, resource['kind'])
+        except KeyError:
+            pass
+        attrs = {
+            'apiVersion': apiVersion,
+            '_plural': resource['name'],
+            '_singular': resource['singularName'],
+            '_namespaced': resource['namespaced'],
+            '_shortNames': resource.get('shortNames', []),
+        }
+        return cls.__new__(cls, resource['kind'], (Kind,), attrs)
 
 
 class Kind(KubeDict, metaclass=KindType):
@@ -302,18 +342,3 @@ class CustomResourceDefinition(Kind):
             crd['subresources'] = subresources
         crd._validate()
         return crd
-
-
-class APIResource(KubeDict):
-    kind: required(str)
-    name: required(str)
-    namespaced: required(bool)
-    singularName: required(str)
-    verbs: required(list_of(str))
-
-
-class APIResourceList(KubeDict):
-    apiVersion: required(str) = 'v1'
-    kind: required(str) = 'APIResourceList'
-    groupVersion: required(str)
-    resources: required(list_of(APIResource))

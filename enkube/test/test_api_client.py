@@ -550,6 +550,18 @@ class TestApiClient(AsyncTestCase):
             await self.api._get_resourceKind('apps/v1', 'FooKind')
         self.assertEqual(err.exception.reason, 'resource kind not found')
 
+    @apatch('enkube.api.types.Kind.from_apiresource')
+    @apatch('enkube.api.client.ApiClient._get_resourceKind')
+    async def test_getkind(self, fa, gr):
+        async def gr_coro(*args, **kw):
+            return sentinel.rk
+        gr.side_effect = gr_coro
+        fa.return_value = sentinel.fookind
+        FooKind = await self.api.getKind('v1', 'FooKind')
+        self.assertIs(FooKind, sentinel.fookind)
+        fa.assert_called_once_with('v1', sentinel.rk)
+        gr.assert_called_once_with('v1', 'FooKind')
+
 
 if __name__ == '__main__':
     unittest.main()
