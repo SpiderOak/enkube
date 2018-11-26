@@ -15,6 +15,8 @@
 from copy import deepcopy
 from urllib.parse import urlencode
 
+from ..util import sync_wrap
+
 
 class ValidationError(Exception):
     pass
@@ -294,6 +296,12 @@ class Kind(KubeDict, metaclass=KindType):
         query.update(kw)
         query = ('?' + urlencode(query, safe='=')) if query else ''
         return '/'.join(components) + query
+
+    @classmethod
+    @sync_wrap
+    async def _watch(cls, watcher, name=None, namespace=None, **kw):
+        path = cls._makeLink(name=name, namespace=namespace, verb='watch', **kw)
+        return await watcher.watch(path)
 
 
 class CustomResourceDefinitionNames(KubeDict):
