@@ -29,10 +29,15 @@ from enkube.api import client
 
 class TestStreamIter(AsyncTestCase):
     def setUp(self):
+        Kind.instances.clear()
+        class FooKind(Kind):
+            apiVersion = 'v1'
+        self.FooKind = FooKind
         self.objects = [
             {'foo': 1},
             {'bar': 2},
             {'baz': 3},
+            {"apiVersion": "v1", "kind": "FooKind", "spec": "foospec"},
         ]
         class aiter:
             async def __anext__(it):
@@ -45,21 +50,33 @@ class TestStreamIter(AsyncTestCase):
         self.resp = MagicMock()
         self.resp.body.__aiter__ = aiter
         self.resp.body.close.side_effect = close_coro
-        self.si = client.StreamIter(self.resp)
+        async def kindify(obj):
+            try:
+                return Kind.getKind(obj['apiVersion'], obj['kind'])(obj)
+            except KeyError:
+                return obj
+        self.api = MagicMock(**{'_kindify.side_effect': kindify})
+        self.si = client.StreamIter(self.api, self.resp)
 
     def test_iter(self):
         self.chunks = [b'\n'.join(json.dumps(o).encode('utf-8') for o in self.objects)]
-        self.assertEqual(list(self.si), self.objects)
+        res = list(self.si)
+        self.assertEqual(res, self.objects)
+        self.assertTrue(isinstance(res[-1], self.FooKind))
 
     def test_iter_with_trailing_newline(self):
         self.chunks = [b'\n'.join(json.dumps(o).encode('utf-8') for o in self.objects) + b'\n']
-        self.assertEqual(list(self.si), self.objects)
+        res = list(self.si)
+        self.assertEqual(res, self.objects)
+        self.assertTrue(isinstance(res[-1], self.FooKind))
 
     def test_iter_chunks(self):
         s = b'\n'.join(json.dumps(o).encode('utf-8') for o in self.objects)
         n = s.find(b'\n') + 3
         self.chunks = [s[:n], s[n:]]
-        self.assertEqual(list(self.si), self.objects)
+        res = list(self.si)
+        self.assertEqual(res, self.objects)
+        self.assertTrue(isinstance(res[-1], self.FooKind))
 
     def test_context_manager(self):
         with self.si as ret:
@@ -388,20 +405,16 @@ class TestApiClient(AsyncTestCase):
             await self.api.request('GET', '/', foo='bar')
         self.assertIs(err.exception.resp, resp)
 
-    @apatch('enkube.api.client.StreamIter')
     @apatch('enkube.api.client.ApiClient._ensure_session')
-    async def test_request_stream(self, si, es):
+    async def test_request_resource_not_found(self, es):
         es.side_effect = dummy_coro
-        resp = MagicMock(status_code=200)
+        resp = MagicMock(status_code=404)
         async def req_coro(*args, **kw):
             return resp
         self.api.session = MagicMock(**{'request.side_effect': req_coro})
-        res = await self.api.request('GET', '/', foo='bar', stream=True)
-        es.assert_called_once_with()
-        self.assertIs(res, si.return_value)
-        self.api.session.request.assert_called_once_with(
-            method='GET', path='/', foo='bar', stream=True)
-        si.assert_called_once_with(resp)
+        with self.assertRaises(client.ResourceNotFoundError) as err:
+            await self.api.request('GET', '/', foo='bar')
+        self.assertIs(err.exception.resp, resp)
 
     @apatch('enkube.api.client.ApiClient.getKind')
     @apatch('enkube.api.client.ApiClient._ensure_session')
@@ -459,6 +472,21 @@ class TestApiClient(AsyncTestCase):
         with self.assertRaises(client.ApiError) as err:
             await self.api.request('GET', '/')
         self.assertIs(err.exception, exc)
+
+    @apatch('enkube.api.client.StreamIter')
+    @apatch('enkube.api.client.ApiClient._ensure_session')
+    async def test_request_stream(self, si, es):
+        es.side_effect = dummy_coro
+        resp = MagicMock(status_code=200)
+        async def req_coro(*args, **kw):
+            return resp
+        self.api.session = MagicMock(**{'request.side_effect': req_coro})
+        res = await self.api.request('GET', '/', foo='bar', stream=True)
+        es.assert_called_once_with()
+        self.assertIs(res, si.return_value)
+        self.api.session.request.assert_called_once_with(
+            method='GET', path='/', foo='bar', stream=True)
+        si.assert_called_once_with(self.api, resp)
 
     async def test_get_apiversion_v1(self):
         v = {

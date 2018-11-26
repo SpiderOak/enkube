@@ -24,7 +24,7 @@ from curio import subprocess
 import asks
 asks.init('curio')
 
-from ..util import sync_wrap, SyncIter, SyncContextManager
+from ..util import sync_wrap, SyncIter, SyncContextManager, flatten_kube_lists
 from .types import APIResourceList, Kind
 
 LOG = logging.getLogger(__name__)
@@ -44,8 +44,13 @@ class ResourceKindNotFoundError(ApiError):
     pass
 
 
+class ResourceNotFoundError(ApiError):
+    pass
+
+
 class StreamIter(SyncIter, SyncContextManager):
-    def __init__(self, resp):
+    def __init__(self, api, resp):
+        self.api = api
         self.resp = resp
         self.buf = b''
         self.it = resp.body.__aiter__()
@@ -59,7 +64,7 @@ class StreamIter(SyncIter, SyncContextManager):
             if newline > 0:
                 line = self.buf[:newline]
                 self.buf = self.buf[newline:]
-                return json.loads(line)
+                return await self.api._kindify(json.loads(line))
             try:
                 self.buf += await self.it.__anext__()
             except StopAsyncIteration:
@@ -67,7 +72,7 @@ class StreamIter(SyncIter, SyncContextManager):
                     raise
                 line = self.buf
                 self.buf = b''
-                return json.loads(line)
+                return await self.api._kindify(json.loads(line))
 
     async def __aenter__(self):
         return self
@@ -205,15 +210,7 @@ class ApiClient(SyncContextManager):
     async def __aexit__(self, typ, val, tb):
         await self.close()
 
-    @sync_wrap
-    async def request(self, method, path, **kw):
-        await self._ensure_session()
-        resp = await self.session.request(method=method, path=path, **kw)
-        if not (200 <= resp.status_code < 300):
-            raise ApiError(resp)
-        if kw.get('stream'):
-            return StreamIter(resp)
-        obj = resp.json()
+    async def _kindify(self, obj):
         if 'apiVersion' in obj and 'kind' in obj:
             try:
                 kindCls = await self.getKind(obj['apiVersion'], obj['kind'])
@@ -222,6 +219,18 @@ class ApiClient(SyncContextManager):
             else:
                 obj = kindCls(obj)
         return obj
+
+    @sync_wrap
+    async def request(self, method, path, **kw):
+        await self._ensure_session()
+        resp = await self.session.request(method=method, path=path, **kw)
+        if not (200 <= resp.status_code < 300):
+            if resp.status_code == 404:
+                raise ResourceNotFoundError(resp)
+            raise ApiError(resp)
+        if kw.get('stream'):
+            return StreamIter(self, resp)
+        return await self._kindify(resp.json())
 
     get = partialmethod(request, 'GET')
     head = partialmethod(request, 'HEAD')
@@ -264,3 +273,81 @@ class ApiClient(SyncContextManager):
         except KeyError:
             res = await self._get_resourceKind(apiVersion, kind)
             return Kind.from_apiresource(apiVersion, res)
+
+    # LEGACY STUFF - need to update (and add tests)
+
+    async def _last_applied(self, obj):
+        try:
+            obj = await self._kindify(json.loads(
+                obj['metadata']['annotations'][
+                    'kubectl.kubernetes.io/last-applied-configuration'
+                ]
+            ))
+        except KeyError:
+            return obj
+        if not obj['metadata']['annotations']:
+            del obj['metadata']['annotations']
+        if not obj._namespaced:
+            if 'namespace' in obj['metadata']:
+                del obj['metadata']['namespace']
+        return obj
+
+    @sync_wrap
+    async def list(
+        self, apiVersion=None, kind=None, namespace=None,
+        name=None, last_applied=False, **kwargs
+    ):
+        if apiVersion is None:
+            versions = (await self.get('/api'))['versions']
+            versions.extend(
+                v['groupVersion']
+                for g in (await self.get('/apis'))['groups']
+                for v in g['versions']
+            )
+        else:
+            versions = [apiVersion]
+        for apiVersion in versions:
+            if kind is None:
+                await self._get_apiVersion(apiVersion)
+                kinds = sorted(k for v, k in self._kind_cache if v == apiVersion)
+            else:
+                kinds = [kind]
+            for k in kinds:
+                kindCls = await self.getKind(apiVersion, k)
+                if namespace and not kindCls._namespaced:
+                    continue
+                path = kindCls._makeLink(name, namespace, **kwargs)
+                try:
+                    res = await self.get(path)
+                except ApiError as e:
+                    if e.resp.status_code in (404, 405):
+                        continue
+                    raise
+                if res.get('kind', '').endswith('List'):
+                    for obj in res.get('items', []):
+                        obj['apiVersion'] = apiVersion
+                        obj['kind'] = kind
+                        if last_applied:
+                            obj = await self._last_applied(obj)
+                        else:
+                            obj = await self._kindify(obj)
+                        yield obj
+                else:
+                    if last_applied:
+                        res = await self._last_applied(res)
+                    yield res
+
+    @sync_wrap
+    async def get_refs(self, refs, last_applied=False):
+        for ref in flatten_kube_lists(refs):
+            if not isinstance(ref, Kind):
+                kindCls = await self.getKind(ref['apiVersion'], ref['kind'])
+                ref = kindCls(ref)
+            path = ref._selfLink()
+            try:
+                obj = await self.get(path)
+            except ResourceNotFoundError:
+                continue
+            if last_applied:
+                obj = await self._last_applied(obj)
+            yield obj

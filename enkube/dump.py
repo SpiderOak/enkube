@@ -15,7 +15,7 @@
 import click
 
 from .util import format_yaml, close_kernel
-from .api.client_old import Api
+from .api import ApiClient
 from .main import pass_env
 
 
@@ -24,7 +24,7 @@ from .main import pass_env
 def cli(env):
     '''Dump all objects from Kubernetes server.'''
     try:
-        with Api(env) as api:
+        with ApiClient(env) as api:
             for obj in api.list():
                 click.echo(format_yaml(obj))
     finally:

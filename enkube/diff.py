@@ -18,12 +18,11 @@ import pyaml
 import subprocess
 import tempfile
 from collections import OrderedDict, deque
-from deepdiff import DeepDiff
 import click
 
 from .util import format_diff, flatten_kube_lists, close_kernel
 from .render import pass_renderer
-from .api import Api
+from .api import ApiClient
 
 
 def interleave(*iters):
@@ -84,8 +83,7 @@ def diff_ns(ns, objs1, objs2):
 
 
 def diff_obj(ns, k, n, obj1, obj2):
-    d = DeepDiff(obj1, obj2, view='tree')
-    if d:
+    if obj1 != obj2:
         yield ('change_obj', (ns, k, n, d))
 
 
@@ -171,7 +169,7 @@ def cli(renderer, last_applied, show_deleted, quiet, list_):
     rendered = [o for _, o in renderer.render(object_pairs_hook=dict)]
     local = gather_objects(rendered)
     try:
-        with Api(renderer.env) as api:
+        with ApiClient(renderer.env) as api:
             if show_deleted:
                 cluster = api.list(last_applied=last_applied)
             else:

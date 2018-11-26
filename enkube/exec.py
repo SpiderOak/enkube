@@ -18,7 +18,7 @@ import click
 
 from .util import flatten_kube_lists, format_json, close_kernel
 from .ctl import kubectl_popen
-from .api import Api
+from .api import ApiClient
 from .main import pass_env
 
 
@@ -27,13 +27,13 @@ from .main import pass_env
     add_help_option=False
 )
 @click.option('-l', 'labels', multiple=True)
-@click.option('-n', 'namespace')
+@click.option('-n', 'namespace', required=True)
 @click.argument('args', nargs=-1, type=click.UNPROCESSED)
 @pass_env
 def cli(env, namespace, labels, args):
     '''Convenience wrapper for kubectl exec.'''
     try:
-        with Api(env) as api:
+        with ApiClient(env) as api:
             for pod in api.list(
                 'v1', 'Pod', namespace, labelSelector=','.join(labels)
             ):
