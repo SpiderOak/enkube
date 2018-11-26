@@ -36,6 +36,14 @@ class ApiError(Exception):
         self.reason = reason
 
 
+class ApiVersionNotFoundError(ApiError):
+    pass
+
+
+class ResourceKindNotFoundError(ApiError):
+    pass
+
+
 class StreamIter(SyncIter, SyncContextManager):
     def __init__(self, resp):
         self.resp = resp
@@ -205,7 +213,15 @@ class ApiClient(SyncContextManager):
             raise ApiError(resp)
         if kw.get('stream'):
             return StreamIter(resp)
-        return resp.json()
+        obj = resp.json()
+        if 'apiVersion' in obj and 'kind' in obj:
+            try:
+                kindCls = await self.getKind(obj['apiVersion'], obj['kind'])
+            except (ApiVersionNotFoundError, ResourceKindNotFoundError):
+                pass
+            else:
+                obj = kindCls(obj)
+        return obj
 
     get = partialmethod(request, 'GET')
     head = partialmethod(request, 'HEAD')
@@ -222,7 +238,9 @@ class ApiClient(SyncContextManager):
                 res = APIResourceList(await self.get(path))
             except ApiError as err:
                 if err.resp.status_code == 404:
-                    err.reason = 'apiVersion not found'
+                    raise ApiVersionNotFoundError(
+                        resp=err.resp, reason='apiVersion not found'
+                    ) from None
                 raise
             res._validate()
             self._apiVersion_cache[path] = res
@@ -237,9 +255,12 @@ class ApiClient(SyncContextManager):
         try:
             return self._kind_cache[apiVersion, kind]
         except KeyError:
-            raise ApiError(reason='resource kind not found') from None
+            raise ResourceKindNotFoundError(reason='resource kind not found') from None
 
     @sync_wrap
     async def getKind(self, apiVersion, kind):
-        res = await self._get_resourceKind(apiVersion, kind)
-        return Kind.from_apiresource(apiVersion, res)
+        try:
+            return Kind.getKind(apiVersion, kind)
+        except KeyError:
+            res = await self._get_resourceKind(apiVersion, kind)
+            return Kind.from_apiresource(apiVersion, res)

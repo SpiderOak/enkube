@@ -70,6 +70,7 @@ class TestStreamIter(AsyncTestCase):
 
 class TestApiClient(AsyncTestCase):
     def setUp(self):
+        Kind.instances.clear()
         self.api = client.ApiClient(MagicMock())
         self.api.log = MagicMock()
 
@@ -363,52 +364,101 @@ class TestApiClient(AsyncTestCase):
                 pass
         c.assert_called_once_with()
 
-    async def test_request(self):
-        ses = MagicMock()
-        async def es_coro():
-            self.api.session = ses
+    @apatch('enkube.api.client.ApiClient._ensure_session')
+    async def test_request(self, es):
+        es.side_effect = dummy_coro
         resp = MagicMock(status_code=200)
-        async def req_coro():
+        async def req_coro(*args, **kw):
             return resp
-        ses.request.return_value = req_coro()
-        with patch.object(self.api, '_ensure_session') as es:
-            es.return_value = es_coro()
-            res = await self.api.request('GET', '/', foo='bar')
+        self.api.session = MagicMock(**{'request.side_effect': req_coro})
+        res = await self.api.request('GET', '/', foo='bar')
         es.assert_called_once_with()
         self.assertIs(res, resp.json.return_value)
-        ses.request.assert_called_once_with(method='GET', path='/', foo='bar')
+        self.api.session.request.assert_called_once_with(method='GET', path='/', foo='bar')
         resp.json.assert_called_once_with()
 
-    async def test_request_non_2xx_raises_apierror(self):
-        ses = MagicMock()
-        async def es_coro():
-            self.api.session = ses
+    @apatch('enkube.api.client.ApiClient._ensure_session')
+    async def test_request_non_2xx_raises_apierror(self, es):
+        es.side_effect = dummy_coro
         resp = MagicMock(status_code=500)
-        async def req_coro():
+        async def req_coro(*args, **kw):
             return resp
-        ses.request.return_value = req_coro()
-        with patch.object(self.api, '_ensure_session') as es:
-            es.return_value = es_coro()
-            with self.assertRaises(client.ApiError) as err:
-                await self.api.request('GET', '/', foo='bar')
+        self.api.session = MagicMock(**{'request.side_effect': req_coro})
+        with self.assertRaises(client.ApiError) as err:
+            await self.api.request('GET', '/', foo='bar')
         self.assertIs(err.exception.resp, resp)
 
     @apatch('enkube.api.client.StreamIter')
-    async def test_request_stream(self, si):
-        ses = MagicMock()
-        async def es_coro():
-            self.api.session = ses
+    @apatch('enkube.api.client.ApiClient._ensure_session')
+    async def test_request_stream(self, si, es):
+        es.side_effect = dummy_coro
         resp = MagicMock(status_code=200)
-        async def req_coro():
+        async def req_coro(*args, **kw):
             return resp
-        ses.request.return_value = req_coro()
-        with patch.object(self.api, '_ensure_session') as es:
-            es.return_value = es_coro()
-            res = await self.api.request('GET', '/', foo='bar', stream=True)
+        self.api.session = MagicMock(**{'request.side_effect': req_coro})
+        res = await self.api.request('GET', '/', foo='bar', stream=True)
         es.assert_called_once_with()
         self.assertIs(res, si.return_value)
-        ses.request.assert_called_once_with(method='GET', path='/', foo='bar', stream=True)
+        self.api.session.request.assert_called_once_with(
+            method='GET', path='/', foo='bar', stream=True)
         si.assert_called_once_with(resp)
+
+    @apatch('enkube.api.client.ApiClient.getKind')
+    @apatch('enkube.api.client.ApiClient._ensure_session')
+    async def test_request_kindtype(self, gk, es):
+        class FooKind(Kind):
+            apiVersion = 'v1'
+        async def gk_coro(*args, **kw):
+            return FooKind
+        gk.side_effect = gk_coro
+        es.side_effect = dummy_coro
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {'apiVersion': 'v1', 'kind': 'FooKind', 'spec': 'foospec'}
+        async def req_coro(*args, **kw):
+            return resp
+        self.api.session = MagicMock(**{'request.side_effect': req_coro})
+        res = await self.api.request('GET', '/')
+        self.assertEqual(res, resp.json.return_value)
+        gk.assert_called_once_with('v1', 'FooKind')
+        self.assertTrue(isinstance(res, FooKind))
+
+    @apatch('enkube.api.client.ApiClient.getKind')
+    @apatch('enkube.api.client.ApiClient._ensure_session')
+    async def test_request_kindtype_not_found(self, gk, es):
+        class FooKind(Kind):
+            apiVersion = 'v1'
+        async def gk_coro(*args, **kw):
+            raise client.ResourceKindNotFoundError()
+        gk.side_effect = gk_coro
+        es.side_effect = dummy_coro
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {'apiVersion': 'v1', 'kind': 'FooKind', 'spec': 'foospec'}
+        async def req_coro(*args, **kw):
+            return resp
+        self.api.session = MagicMock(**{'request.side_effect': req_coro})
+        res = await self.api.request('GET', '/')
+        self.assertEqual(res, resp.json.return_value)
+        gk.assert_called_once_with('v1', 'FooKind')
+        self.assertFalse(isinstance(res, FooKind))
+
+    @apatch('enkube.api.client.ApiClient.getKind')
+    @apatch('enkube.api.client.ApiClient._ensure_session')
+    async def test_request_kindtype_other_error(self, gk, es):
+        class FooKind(Kind):
+            apiVersion = 'v1'
+        exc = client.ApiError(resp=MagicMock(status_code=500))
+        async def gk_coro(*args, **kw):
+            raise exc
+        gk.side_effect = gk_coro
+        es.side_effect = dummy_coro
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {'apiVersion': 'v1', 'kind': 'FooKind', 'spec': 'foospec'}
+        async def req_coro(*args, **kw):
+            return resp
+        self.api.session = MagicMock(**{'request.side_effect': req_coro})
+        with self.assertRaises(client.ApiError) as err:
+            await self.api.request('GET', '/')
+        self.assertIs(err.exception, exc)
 
     async def test_get_apiversion_v1(self):
         v = {
@@ -479,7 +529,7 @@ class TestApiClient(AsyncTestCase):
         async def get_coro(*args, **kw):
             raise client.ApiError(MagicMock(status_code=404))
         self.api.get = MagicMock(side_effect=get_coro)
-        with self.assertRaises(client.ApiError) as err:
+        with self.assertRaises(client.ApiVersionNotFoundError) as err:
             await self.api._get_apiVersion('apps/v1')
         self.assertEqual(err.exception.reason, 'apiVersion not found')
 
@@ -524,7 +574,7 @@ class TestApiClient(AsyncTestCase):
         async def get_coro(*args, **kw):
             return v
         self.api.get = MagicMock(side_effect=get_coro)
-        with self.assertRaises(client.ApiError) as err:
+        with self.assertRaises(client.ResourceKindNotFoundError) as err:
             await self.api._get_resourceKind('apps/v1', 'BarKind')
         self.assertEqual(err.exception.reason, 'resource kind not found')
 
@@ -561,6 +611,12 @@ class TestApiClient(AsyncTestCase):
         self.assertIs(FooKind, sentinel.fookind)
         fa.assert_called_once_with('v1', sentinel.rk)
         gr.assert_called_once_with('v1', 'FooKind')
+
+    async def test_getkind_local_kind(self):
+        class FooKind(Kind):
+            apiVersion = 'v1'
+        res = await self.api.getKind('v1', 'FooKind')
+        self.assertIs(res, FooKind)
 
 
 if __name__ == '__main__':
