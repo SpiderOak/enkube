@@ -341,6 +341,13 @@ class ApiClient(SyncContextManager):
                     yield res
 
     @sync_wrap
+    async def ref_to_path(self, ref):
+        if not isinstance(ref, Kind):
+            kindCls = await self.getKind(ref['apiVersion'], ref['kind'])
+            ref = kindCls(ref)
+        return ref._selfLink()
+
+    @sync_wrap
     async def get_refs(self, refs, last_applied=False):
         for ref in flatten_kube_lists(refs):
             if not isinstance(ref, Kind):
@@ -368,3 +375,13 @@ class ApiClient(SyncContextManager):
             obj = await self._kindify(obj)
         path = obj._selfLink()
         return await self.put(path, json=obj)
+
+    @sync_wrap
+    async def build_path(
+        self, apiVersion, kind=None, namespace=None, name=None,
+        verb=None, **kwargs
+    ):
+        if kind:
+            k = await self.getKind(apiVersion, kind)
+            return k._makeLink(namespace=namespace, name=name, verb=verb, **kwargs)
+        return f"/api{'' if apiVersion == 'v1' else 's'}/{apiVersion}"
