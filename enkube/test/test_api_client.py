@@ -116,6 +116,17 @@ class TestApiClient(AsyncTestCase):
         ep.assert_called_once_with()
         self.assertFalse(us.called)
 
+    @apatch('enkube.api.client.ApiClient._poll_proxy')
+    async def test_ensure_proxy_after_close_raises_runtimeerror(self, pp):
+        async def pp_coro():
+            return True
+        pp.side_effect = pp_coro
+        self.api._closed = True
+        async with self.api._startup_lock:
+            with self.assertRaises(RuntimeError):
+                await self.api._ensure_proxy()
+        self.assertFalse(pp.called)
+
     async def test_ensure_proxy_requires_startup_lock(self):
         with self.assertRaises(AssertionError):
             await self.api._ensure_proxy()

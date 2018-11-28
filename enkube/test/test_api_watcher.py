@@ -53,7 +53,9 @@ class TestWatch(AsyncTestCase):
         self.stream = FakeStreamIter([])
         async def stream_coro(*args, **kw):
             return self.stream
-        self.api = MagicMock(**{'get.side_effect': stream_coro})
+        async def kindify_coro(obj):
+            return dict(obj, kindified=True)
+        self.api = MagicMock(**{'get.side_effect': stream_coro, '_kindify.side_effect': kindify_coro})
         self.spawned_tasks = []
         async def spawn_coro(*args, **kw):
             task = MagicMock()
@@ -150,7 +152,9 @@ class TestWatcher(AsyncTestCase):
             return FakeStreamIter([
                 {'type': event, 'object': obj} for event, obj in self.events
             ])
-        self.api = MagicMock(**{'get.side_effect': stream_coro})
+        async def kindify_coro(obj):
+            return dict(obj, kindified=True)
+        self.api = MagicMock(**{'get.side_effect': stream_coro, '_kindify.side_effect': kindify_coro})
         self.watcher = watcher.Watcher(self.api)
 
     async def test_watch(self):
@@ -203,7 +207,10 @@ class TestWatcher(AsyncTestCase):
             if event == 'SENTINEL':
                 await self.watcher.cancel()
             res.append((event, obj))
-        self.assertEqual(res, self.events)
+        self.assertEqual(res, [
+            (evt, dict(obj, kindified=True) if isinstance(obj, dict) else obj)
+            for evt, obj in self.events
+        ])
 
     async def test_iterate_multi_watch(self):
         async def get_coro(path, *args, **kw):

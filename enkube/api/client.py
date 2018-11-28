@@ -160,6 +160,8 @@ class ApiClient(SyncContextManager):
         await curio.spawn(self._read_proxy_stdout, daemon=True)
 
     async def _ensure_proxy(self):
+        if self._closed:
+            raise RuntimeError('API client is closed')
         assert self._startup_lock.locked()
         if await self._poll_proxy():
             return

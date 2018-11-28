@@ -12,16 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
 import logging
 
 import curio
 
 from ..util import sync_wrap, SyncIter, SyncContextManager
+from .types import Kind
 
 LOG = logging.getLogger(__name__)
 
 
 class Watch:
+    log = LOG.getChild('Watch')
+
     def __init__(self, api, watches, taskgroup, path):
         self.api = api
         self._watches = watches
@@ -40,6 +44,7 @@ class Watch:
 
     async def _get_stream(self):
         if self._stream is None:
+            self.log.debug(f'stream {self.path}')
             self._stream = await self.api.get(self.path, stream=True)
 
     async def _spawn(self):
@@ -51,6 +56,7 @@ class Watch:
 
     async def _get_next(self):
         event = None
+        exc = None
         try:
             while not self._closed:
                 await self._get_stream()
@@ -58,12 +64,13 @@ class Watch:
                     event = await self._stream.__anext__()
                     break
                 except StopAsyncIteration:
+                    self.log.debug('stream ended')
                     self._stream = None
 
-        except curio.CancelledError:
-            pass
+        except Exception:
+            exc = sys.exc_info()
 
-        return self, event
+        return self, event, exc
 
 
 class Watcher(SyncIter):
@@ -96,11 +103,17 @@ class Watcher(SyncIter):
             task = await self._taskgroup.next_done()
             if not task:
                 break
-            try:
-                watch, event = task.result
-            except curio.CancelledError:
-                continue
+            watch, event, exc = task.result
+            if exc:
+                typ, val, tb = exc
+                if issubclass(typ, curio.CancelledError):
+                    continue
+                await watch._spawn()
+                raise typ.with_traceback(val, tb)
             if event:
                 await watch._spawn()
-                return event['type'], event['object']
+                event, obj = event['type'], event['object']
+                if isinstance(obj, dict) and not isinstance(obj, Kind):
+                    obj = await self.api._kindify(obj)
+                return event, obj
         raise StopAsyncIteration()

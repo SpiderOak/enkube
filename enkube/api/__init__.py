@@ -20,6 +20,7 @@ from ..util import format_json, format_python, close_kernel
 from ..main import pass_env
 from .client import ApiClient
 from .watcher import Watch, Watcher
+from .cache import Cache
 
 
 def displayhook(value):
@@ -56,6 +57,7 @@ def cli(env):
                 'api': api,
                 'Watcher': Watcher,
                 'Watch': Watch,
+                'Cache': Cache,
             }
             shell = code.InteractiveConsole(context)
             shell.interact()
