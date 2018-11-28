@@ -224,6 +224,7 @@ class ApiClient(SyncContextManager):
 
     @sync_wrap
     async def request(self, method, path, **kw):
+        self.log.debug(f'{method} {path}')
         await self._ensure_session()
         resp = await self.session.request(method=method, path=path, **kw)
         if not (200 <= resp.status_code < 300):
@@ -353,3 +354,17 @@ class ApiClient(SyncContextManager):
             if last_applied:
                 obj = await self._last_applied(obj)
             yield obj
+
+    @sync_wrap
+    async def create(self, obj):
+        if not isinstance(obj, Kind):
+            obj = await self._kindify(obj)
+        path = obj._makeLink(namespace=obj.metadata.get('namespace'))
+        return await self.post(path, json=obj)
+
+    @sync_wrap
+    async def replace(self, obj):
+        if not isinstance(obj, Kind):
+            obj = await self._kindify(obj)
+        path = obj._selfLink()
+        return await self.put(path, json=obj)

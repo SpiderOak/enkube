@@ -14,6 +14,7 @@
 
 import logging
 import weakref
+from types import MethodType
 
 import curio
 
@@ -67,7 +68,13 @@ class Cache:
                     self.log.exception('unhandled error in subscription handler')
 
     def subscribe(self, cond, func, weak=True):
-        ref = weakref.ref(func) if weak else func
+        if weak:
+            if isinstance(func, MethodType):
+                ref = weakref.WeakMethod(func)
+            else:
+                ref = weakref.ref(func)
+        else:
+            ref = func
         self.subscriptions[ref] = cond
 
     def unsubscribe(self, func):

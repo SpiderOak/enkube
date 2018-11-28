@@ -328,7 +328,7 @@ class CustomResourceDefinition(Kind):
     def _from_kind(cls, kind):
         g, v = kind.apiVersion.split('/', 1)
         crd = cls({
-            'metadata': { 'name': f'{plural}.{g}', },
+            'metadata': { 'name': f'{kind._plural}.{g}', },
             'spec': {
                 'group': g,
                 'version': v,

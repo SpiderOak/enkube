@@ -22,7 +22,9 @@ import curio
 
 from .util import close_kernel, sync_wrap
 from .plugins import PluginLoader
-from .api.client_old import Api, MultiWatch
+from .api.client import ApiClient
+from .api.watcher import Watcher
+from .api.cache import Cache
 from .main import pass_env
 
 LOG = logging.getLogger(__name__)
@@ -93,6 +95,9 @@ class Controller:
 
     def __init__(self, api, handlers=()):
         self.api = api
+        self.watcher = Watcher(api)
+        self.cache = Cache(self.watcher)
+        self.cache.subscribe(lambda event, obj: True, self.handle_event)
         self.crds = []
         self.handlers = []
         for h in handlers:
@@ -112,11 +117,21 @@ class Controller:
                 except Exception:
                     self.log.exception('error starting handler')
 
+        seen = set()
+        for h in self.handlers:
+            for e in h.event_handlers:
+                k = await self.api.getKind(e.watch_spec['apiVersion'], e.watch_spec['kind'])
+                path = k._makeLink(e.watch_spec['name'], e.watch_spec['namespace'], 'watch')
+                if path in seen:
+                    continue
+                seen.add(path)
+                await self.watcher.watch(path)
+
         shutdown_event = curio.SignalEvent(signal.SIGINT, signal.SIGTERM)
         try:
             async with curio.TaskGroup(wait=any) as g:
+                await g.spawn(self.cache.run)
                 await g.spawn(self._crd_task)
-                await g.spawn(self._watch_task)
                 for handler in self.handlers:
                     await handler.spawn_controller_tasks(g)
                 shutdown_task = await g.spawn(shutdown_event.wait)
@@ -153,52 +168,8 @@ class Controller:
                     except Exception as err:
                         self.log.error(f'error creating CRD: {err}')
 
-    async def _watch_task(self):
-        state = {}
-        next_time = 0
-        while True:
-            next_time = await curio.wake_at(next_time) + self.watch_interval
-            watches = [dict(w) for w in {
-                tuple(sorted(e.watch_spec.items()))
-                for h in self.handlers
-                for e in h.event_handlers
-            }]
-            if not watches:
-                continue
-            w = await MultiWatch(self.api, watches)
-            async with w:
-                try:
-                    async for event, obj in w:
-                        await self._handle(state, event, obj)
-                    else:
-                        self.log.debug('watch exhausted')
-                except curio.TaskCancelled:
-                    return
-                except Exception as err:
-                    self.log.warning(
-                        f'error while watching for events: {err}')
-
-    async def _handle(self, state, event, obj):
-        md = obj.get('metadata', {})
-        if 'selfLink' in md:
-            path = md['selfLink']
-        else:
-            path = await self.api.ref_to_path(obj)
-        v = md.get('resourceVersion')
-
-        if path not in state or state[path] != v:
-            try:
-                await self.handle_event(event, obj)
-            except Exception:
-                self.log.exception(
-                    'unhandled error in event handler')
-
-        if event == 'DELETED':
-            state.pop(path, None)
-        else:
-            state[path] = v
-
-    async def handle_event(self, event, obj):
+    async def handle_event(self, cache, event, old, new):
+        obj = old if event == 'DELETE' else new
         for handler in self.handlers:
             for event_handler in handler.event_handlers:
                 await event_handler.handle_event(handler, self, event, obj)
@@ -229,7 +200,7 @@ def cli():
         #k._call_at_shutdown(m.close)
 
         try:
-            with Api(env) as api:
+            with ApiClient(env) as api:
                 kw['api'] = api
                 handlers = [_pass_kwargs(kw, plugin) for plugin in handler_plugins]
                 Controller(api, handlers).run()

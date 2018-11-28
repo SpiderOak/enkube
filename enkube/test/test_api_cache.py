@@ -208,6 +208,23 @@ class TestCache(AsyncTestCase):
         self.assertEqual(res, [])
         self.assertEqual(self.cache.subscriptions, {})
 
+    async def test_subscribe_weak_method(self):
+        objs = [
+            FooKind(metadata={'name': 'foo'}),
+            FooKind(metadata={'name': 'bar'}),
+            FooKind(metadata={'name': 'baz'}),
+        ]
+        events = [('ADDED', obj) for obj in objs]
+        self.events.extend(events)
+        res = []
+        class Foo:
+            async def receiver(self, cache, event, old, new):
+                res.append(event)
+        foo = Foo()
+        self.cache.subscribe(lambda evt, obj: True, foo.receiver)
+        await self.cache.run()
+        self.assertEqual(res, ['ADDED' for _ in objs])
+
     def test_unsubscribe_strong(self):
         async def receiver(cache, event, old, new):
             pass
