@@ -61,7 +61,7 @@ class TestWatch(AsyncTestCase):
             task = MagicMock()
             self.spawned_tasks.append(task)
             return task
-        self.watches = set()
+        self.watches = {}
         self.taskgroup = MagicMock(**{'spawn.side_effect': spawn_coro})
         self.watch = watcher.Watch(self.api, self.watches, self.taskgroup, sentinel.path)
 
@@ -69,13 +69,13 @@ class TestWatch(AsyncTestCase):
         await self.watch._spawn()
         self.taskgroup.spawn.assert_called_once_with(self.watch._get_next)
         self.assertEqual([self.watch._current_task], self.spawned_tasks)
-        self.assertEqual(self.watches, {self.watch})
+        self.assertEqual(self.watches, {sentinel.path: self.watch})
 
     async def test_spawn_while_closed(self):
         self.watch._closed = True
         await self.watch._spawn()
         self.taskgroup.spawn.assert_not_called()
-        self.assertEqual(self.watches, set())
+        self.assertEqual(self.watches, {})
 
     async def test_get_next_without_stream(self):
         self.stream.items.append(sentinel.event)
@@ -131,10 +131,10 @@ class TestWatch(AsyncTestCase):
         self.assertTrue(self.watch._closed)
 
     async def test_cancel_discards_watch(self):
-        self.watches.add(self.watch)
+        self.watches[sentinel.path] = self.watch
         await self.watch.cancel()
         self.assertTrue(self.watch._closed)
-        self.assertEqual(self.watches, set())
+        self.assertEqual(self.watches, {})
 
     async def test_cancel_while_blocked(self):
         self.watch._current_task = t = MagicMock(**{'cancel.side_effect': dummy_coro})
@@ -166,6 +166,17 @@ class TestWatcher(AsyncTestCase):
         self.assertTrue(isinstance(watch, watcher.Watch))
         self.assertEqual(watch.path, '/foobar')
         self.watcher._taskgroup.spawn.assert_called_once_with(watch._get_next)
+        self.api.get.assert_called_once_with('/foobar', stream=True)
+
+    async def test_watch_deduplicate(self):
+        self.watcher._taskgroup = MagicMock(**{
+            'cancel_remaining.side_effect': dummy_coro,
+            'spawn.side_effect': dummy_coro,
+        })
+        watch1 = await self.watcher.watch('/foobar')
+        watch2 = await self.watcher.watch('/foobar')
+        self.assertIs(watch2, watch1)
+        self.watcher._taskgroup.spawn.assert_called_once_with(watch1._get_next)
         self.api.get.assert_called_once_with('/foobar', stream=True)
 
     async def test_watch_after_cancel_raises_runtimeerror(self):

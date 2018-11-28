@@ -40,7 +40,7 @@ class Watch:
         if self._current_task:
             await self._current_task.cancel()
             self._current_task = None
-        self._watches.discard(self)
+        self._watches.pop(self.path, None)
 
     async def _get_stream(self):
         if self._stream is None:
@@ -51,7 +51,7 @@ class Watch:
         if self._closed:
             return
         await self._get_stream()
-        self._watches.add(self)
+        self._watches[self.path] = self
         self._current_task = await self._taskgroup.spawn(self._get_next)
 
     async def _get_next(self):
@@ -76,7 +76,7 @@ class Watch:
 class Watcher(SyncIter):
     def __init__(self, api):
         self.api = api
-        self._watches = set()
+        self._watches = {}
         self._closed = False
         self._taskgroup = curio.TaskGroup()
 
@@ -84,6 +84,8 @@ class Watcher(SyncIter):
     async def watch(self, path):
         if self._closed:
             raise RuntimeError('Watcher is closed')
+        if path in self._watches:
+            return self._watches[path]
         watch = Watch(self.api, self._watches, self._taskgroup, path)
         await watch._spawn()
         return watch
@@ -91,7 +93,7 @@ class Watcher(SyncIter):
     @sync_wrap
     async def cancel(self):
         self._closed = True
-        for w in list(self._watches):
+        for w in list(self._watches.values()):
             await w.cancel()
         await self._taskgroup.cancel_remaining()
 
