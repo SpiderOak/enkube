@@ -110,6 +110,9 @@ class KubeDict(metaclass=KubeDictType):
                 if not isinstance(v, typ):
                     self[k] = typ(v)
 
+    def __getstate__(self):
+        return {}
+
     def _validate_field_types(self):
         for attr, (typ, flags) in type(self).__annotations__.items():
             if 'required' in flags and attr not in self:
@@ -187,6 +190,15 @@ class APIResourceList(KubeDict):
     resources: required(list_of(APIResource))
 
 
+class OwnerRef(KubeDict):
+    apiVersion: required(str)
+    kind: required(str)
+    name: required(str)
+    uid: str
+    controller: bool
+    blockOwnerDeletion: bool
+
+
 class ObjectMeta(KubeDict):
     # this is not exhaustive
     name: required(str)
@@ -197,6 +209,7 @@ class ObjectMeta(KubeDict):
     resourceVersion: str
     selfLink: str
     uid: str
+    ownerReferences: list_of(OwnerRef)
 
 
 class KindType(KubeDictType):

@@ -24,12 +24,11 @@ from ..util import sync_wrap
 LOG = logging.getLogger(__name__)
 
 
-class Cache:
+class Cache(dict):
     log = LOG.getChild('Cache')
 
     def __init__(self, watcher):
         self.watcher = watcher
-        self.state = {}
         self.subscriptions = {}
 
     @sync_wrap
@@ -46,26 +45,29 @@ class Cache:
             if event == 'DELETED':
                 old = obj
                 new = None
-                if path in self.state:
-                    del self.state[path]
+                if path in self:
+                    del self[path]
             else:
-                old = self.state.get(path)
+                old = self.get(path)
                 new = obj
-                self.state[path] = new
+                self[path] = new
                 if old == new:
                     continue
 
-            for ref in list(self.subscriptions):
-                func = ref() if isinstance(ref, weakref.ref) else ref
-                if not func:
-                    del self.subscriptions[ref]
-                    continue
-                cond = self.subscriptions[ref]
-                try:
-                    if cond(event, obj):
-                        await func(self, event, old, new)
-                except Exception:
-                    self.log.exception('unhandled error in subscription handler')
+            await self.notify_subscriptions(event, obj, old, new)
+
+    async def notify_subscriptions(self, event, obj, old, new):
+        for ref in list(self.subscriptions):
+            func = ref() if isinstance(ref, weakref.ref) else ref
+            if not func:
+                del self.subscriptions[ref]
+                continue
+            cond = self.subscriptions[ref]
+            try:
+                if cond(event, obj):
+                    await func(self, event, old, new)
+            except Exception:
+                self.log.exception('unhandled error in subscription handler')
 
     def subscribe(self, cond, func, weak=True):
         if weak:
@@ -82,3 +84,13 @@ class Cache:
             cur_func = ref() if isinstance(ref, weakref.ref) else ref
             if cur_func is None or cur_func == func:
                 del self.subscriptions[ref]
+
+    # TODO: everything after this line is untested
+
+    async def get_or_update(self, path):
+        if path in self:
+            obj = self[path]
+        else:
+            self[path] = obj = await self.watcher.api.get(path)
+            await self.notify_subscriptions('ADDED', obj, None, obj)
+        return obj

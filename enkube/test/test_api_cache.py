@@ -55,7 +55,7 @@ class TestCache(AsyncTestCase):
         state = dict((o._selfLink(), o) for o in objs)
         self.events.extend(('ADDED', obj) for obj in objs)
         await self.cache.run()
-        self.assertEqual(self.cache.state, state)
+        self.assertEqual(self.cache, state)
 
     async def test_removes_deleted_objects(self):
         objs = [
@@ -67,7 +67,7 @@ class TestCache(AsyncTestCase):
         self.events.extend(('ADDED', obj) for obj in objs)
         self.events.extend(('DELETED', obj) for obj in objs[:-1])
         await self.cache.run()
-        self.assertEqual(self.cache.state, state)
+        self.assertEqual(self.cache, state)
 
     async def test_updates_modified_objects(self):
         obj1 = FooKind(metadata={'name': 'foo'}, foo=1)
@@ -76,7 +76,7 @@ class TestCache(AsyncTestCase):
         self.events.append(('ADDED', obj1))
         self.events.append(('MODIFIED', obj2))
         await self.cache.run()
-        self.assertEqual(self.cache.state, state)
+        self.assertEqual(self.cache, state)
 
     async def test_subscribe_added(self):
         objs = [
