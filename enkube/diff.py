@@ -84,7 +84,7 @@ def diff_ns(ns, objs1, objs2):
 
 def diff_obj(ns, k, n, obj1, obj2):
     if obj1 != obj2:
-        yield ('change_obj', (ns, k, n, d))
+        yield ('change_obj', (ns, k, n))
 
 
 def print_diff(o1, o2):
@@ -141,7 +141,7 @@ def print_change(action, args, local, cluster):
         ns, k, n = args
         click.secho('Deleted {} {}/{}'.format(k, ns, n), fg='red')
     elif action == 'change_obj':
-        ns, k, n, d = args
+        ns, k, n = args
         click.secho('Changed {} {}/{}'.format(k, ns, n), fg='yellow')
         print_diff(cluster[ns][k,n], local[ns][k,n])
 
