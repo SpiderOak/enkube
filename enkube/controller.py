@@ -108,13 +108,6 @@ def cli():
     @pass_env
     def cli(env, **kw):
         '''Run a Kubernetes controller.'''
-
-        #from curio.monitor import Monitor
-        #from .util import get_kernel
-        #k = get_kernel()
-        #m = Monitor(k)
-        #k._call_at_shutdown(m.close)
-
         try:
             with ApiClient(env) as api:
                 kw['api'] = api
