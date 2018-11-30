@@ -271,29 +271,25 @@ class Kind(KubeDict, metaclass=KindType):
         super(Kind, self)._validate()
         self._validate_namespace()
 
-    def _selfLink(self, verb=None):
-        if 'selfLink' in self.metadata:
-            l = self.metadata['selfLink']
-            if not verb:
-                return l
-            return l.replace(f'/{self.apiVersion}/', f'/{self.apiVersion}/{verb}/', 1)
+    def _selfLink(self):
+        try:
+            return self.metadata['selfLink']
+        except KeyError:
+            pass
 
         self._validate_namespace()
         return self._makeLink(
             name=self.metadata['name'],
-            namespace=self.metadata.get('namespace'),
-            verb=verb
+            namespace=self.metadata.get('namespace')
         )
 
     @classmethod
-    def _makeLink(cls, name=None, namespace=None, verb=None, **kw):
+    def _makeLink(cls, name=None, namespace=None, **kw):
         components = [
             '',
             'apis' if '/' in cls.apiVersion else 'api',
             cls.apiVersion,
         ]
-        if verb:
-            components.append(verb)
         if namespace:
             if cls._namespaced:
                 components.extend(['namespaces', namespace])
@@ -313,7 +309,8 @@ class Kind(KubeDict, metaclass=KindType):
     @classmethod
     @sync_wrap
     async def _watch(cls, watcher, name=None, namespace=None, **kw):
-        path = cls._makeLink(name=name, namespace=namespace, verb='watch', **kw)
+        kw['watch'] = 'true'
+        path = cls._makeLink(name=name, namespace=namespace, **kw)
         return await watcher.watch(path)
 
 

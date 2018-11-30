@@ -103,15 +103,6 @@ class TestKind(unittest.TestCase):
         o = MyNamespacedKind(metadata={'selfLink': 'foobar'})
         self.assertEqual(o._selfLink(), 'foobar')
 
-    def test_selflink_with_verb(self):
-        o = MyNamespacedKind(metadata={
-            'selfLink': '/apis/testing.enkube.local/v1/namespaces/foo/mynamespacedkinds/bar'
-        })
-        self.assertEqual(
-            o._selfLink(verb='watch'),
-            '/apis/testing.enkube.local/v1/watch/namespaces/foo/mynamespacedkinds/bar'
-        )
-
     def test_selflink_makelink_namespaced(self):
         o = MyNamespacedKind(metadata={'namespace': 'foo', 'name': 'bar'})
         self.assertEqual(
@@ -161,24 +152,6 @@ class TestKind(unittest.TestCase):
             '/apis/testing.enkube.local/v1/mynamespacedkinds?fieldSelector=metadata.name=foo'
         )
 
-    def test_makelink_namespaced_with_verb(self):
-        self.assertEqual(
-            MyNamespacedKind._makeLink('bar', 'foo', verb='watch'),
-            '/apis/testing.enkube.local/v1/watch/namespaces/foo/mynamespacedkinds/bar'
-        )
-
-    def test_makelink_namespaced_list_with_verb(self):
-        self.assertEqual(
-            MyNamespacedKind._makeLink(namespace='foo', verb='watch'),
-            '/apis/testing.enkube.local/v1/watch/namespaces/foo/mynamespacedkinds'
-        )
-
-    def test_makelink_namespaced_list_all_namespaces_with_verb(self):
-        self.assertEqual(
-            MyNamespacedKind._makeLink(verb='watch'),
-            '/apis/testing.enkube.local/v1/watch/mynamespacedkinds'
-        )
-
     def test_makelink_cluster(self):
         self.assertEqual(
             MyClusterKind._makeLink('bar'),
@@ -189,12 +162,6 @@ class TestKind(unittest.TestCase):
         self.assertEqual(
             MyClusterKind._makeLink(),
             '/apis/testing.enkube.local/v1/myclusterkinds'
-        )
-
-    def test_makelink_cluster_list_with_verb(self):
-        self.assertEqual(
-            MyClusterKind._makeLink(verb='watch'),
-            '/apis/testing.enkube.local/v1/watch/myclusterkinds'
         )
 
     def test_makelink_cluster_with_namespace_raises_valueerror(self):
