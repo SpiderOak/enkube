@@ -357,6 +357,6 @@ class CustomResourceDefinition(Kind):
         })
         subresources = getattr(kind, '_subresources', None)
         if subresources:
-            crd['subresources'] = subresources
+            crd.spec.subresources = subresources
         crd._validate()
         return crd
