@@ -39,7 +39,7 @@ class Cache(dict):
             except (StopAsyncIteration, curio.CancelledError):
                 break
             except Exception as err:
-                self.log.warn(f'watch iteration resulted in error: {err}')
+                self.log.warn(f'watch iteration resulted in error: {err!r}')
                 continue
             path = obj._selfLink()
             if event == 'DELETED':
