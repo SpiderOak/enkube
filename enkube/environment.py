@@ -15,6 +15,7 @@
 import os
 import json
 import logging
+import tempfile
 
 from curio import subprocess
 
@@ -121,3 +122,21 @@ class Environment:
 
     def to_json(self):
         return json.dumps(self.to_dict())
+
+
+class TempEnvironment(Environment):
+    def __init__(self, kubeconfig=None):
+        self.tempdir = tempfile.TemporaryDirectory()
+        super(TempEnvironment, self).__init__()
+        if kubeconfig:
+            with open(os.path.join(self.envdir, '.kubeconfig'), 'wb') as f:
+                f.write(kubeconfig)
+
+    def _find_envdir(self):
+        return self.tempdir.name
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, typ, exc, tb):
+        self.tempdir.cleanup()
