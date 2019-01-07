@@ -395,7 +395,7 @@ class TestApiClient(AsyncTestCase):
     @apatch('enkube.api.client.ApiClient._ensure_session')
     async def test_request(self, es):
         es.side_effect = dummy_coro
-        resp = MagicMock(status_code=200)
+        resp = MagicMock(status_code=200, headers={'content-type': 'application/json'})
         async def req_coro(*args, **kw):
             return resp
         self.api.session = MagicMock(**{'request.side_effect': req_coro})
@@ -404,6 +404,19 @@ class TestApiClient(AsyncTestCase):
         self.assertIs(res, resp.json.return_value)
         self.api.session.request.assert_called_once_with(method='GET', path='/', foo='bar')
         resp.json.assert_called_once_with()
+
+    @apatch('enkube.api.client.ApiClient._ensure_session')
+    async def test_request_non_json(self, es):
+        es.side_effect = dummy_coro
+        resp = MagicMock(status_code=200)
+        async def req_coro(*args, **kw):
+            return resp
+        self.api.session = MagicMock(**{'request.side_effect': req_coro})
+        res = await self.api.request('GET', '/', foo='bar')
+        es.assert_called_once_with()
+        self.assertIs(res, resp.text)
+        self.api.session.request.assert_called_once_with(method='GET', path='/', foo='bar')
+        self.assertFalse(resp.json.called)
 
     @apatch('enkube.api.client.ApiClient._ensure_session')
     async def test_request_non_2xx_raises_apierror(self, es):
@@ -436,7 +449,7 @@ class TestApiClient(AsyncTestCase):
             return FooKind
         gk.side_effect = gk_coro
         es.side_effect = dummy_coro
-        resp = MagicMock(status_code=200)
+        resp = MagicMock(status_code=200, headers={'content-type': 'application/json'})
         resp.json.return_value = {'apiVersion': 'v1', 'kind': 'FooKind', 'spec': 'foospec'}
         async def req_coro(*args, **kw):
             return resp
@@ -455,7 +468,7 @@ class TestApiClient(AsyncTestCase):
             raise client.ResourceKindNotFoundError()
         gk.side_effect = gk_coro
         es.side_effect = dummy_coro
-        resp = MagicMock(status_code=200)
+        resp = MagicMock(status_code=200, headers={'content-type': 'application/json'})
         resp.json.return_value = {'apiVersion': 'v1', 'kind': 'FooKind', 'spec': 'foospec'}
         async def req_coro(*args, **kw):
             return resp
@@ -475,7 +488,7 @@ class TestApiClient(AsyncTestCase):
             raise exc
         gk.side_effect = gk_coro
         es.side_effect = dummy_coro
-        resp = MagicMock(status_code=200)
+        resp = MagicMock(status_code=200, headers={'content-type': 'application/json'})
         resp.json.return_value = {'apiVersion': 'v1', 'kind': 'FooKind', 'spec': 'foospec'}
         async def req_coro(*args, **kw):
             return resp

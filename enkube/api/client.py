@@ -233,7 +233,9 @@ class ApiClient(SyncContextManager):
             raise ApiError(resp)
         if kw.get('stream'):
             return StreamIter(self, resp)
-        return await self._kindify(resp.json())
+        if resp.headers.get('content-type', '').split(';', 1)[0] == 'application/json':
+            return await self._kindify(resp.json())
+        return resp.text
 
     get = partialmethod(request, 'GET')
     head = partialmethod(request, 'HEAD')
