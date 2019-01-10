@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from copy import deepcopy
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote_plus
 
 from ..util import sync_wrap
 
@@ -292,14 +292,14 @@ class Kind(KubeDict, metaclass=KindType):
         ]
         if namespace:
             if cls._namespaced:
-                components.extend(['namespaces', namespace])
+                components.extend(['namespaces', quote_plus(namespace)])
             else:
                 raise ValueError('cannot specify namespace for cluster-scoped resource')
         components.append(cls._plural)
         query = {}
         if name:
             if namespace or not cls._namespaced:
-                components.append(name)
+                components.append(quote_plus(name))
             else:
                 query['fieldSelector'] = f'metadata.name={name}'
         query.update(kw)
