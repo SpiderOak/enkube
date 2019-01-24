@@ -171,6 +171,8 @@ class KubeDict(metaclass=KubeDictType):
                 del self[key]
             except KeyError:
                 pass
+            else:
+                return
         super(KubeDict, self).__delattr__(key)
 
 
@@ -199,15 +201,24 @@ class OwnerRef(KubeDict):
     blockOwnerDeletion: bool
 
 
-class ObjectMeta(KubeDict):
+class BaseMeta(KubeDict):
+    resourceVersion: str
+    selfLink: str
+
+
+class ListMeta(BaseMeta):
+    # continue is a python keyword so this doesn't work
+    #continue: str
+    pass
+
+
+class ObjectMeta(BaseMeta):
     # this is not exhaustive
     name: required(str)
     namespace: str
     annotations: dict
     finalizers: list_of(str)
     labels: dict
-    resourceVersion: str
-    selfLink: str
     uid: str
     ownerReferences: list_of(OwnerRef)
 
@@ -227,6 +238,8 @@ class KindType(KubeDictType):
         inst = super(KindType, cls).__new__(cls, name, bases, attrs)
         if hasattr(inst, 'apiVersion') and hasattr(inst, 'kind'):
             cls.instances[inst.apiVersion, inst.kind] = inst
+            inst.List = ObjectList._subclass_for_kind(inst)
+            cls.instances[inst.List.apiVersion, inst.List.kind] = inst.List
         return inst
 
     @classmethod
@@ -312,6 +325,24 @@ class Kind(KubeDict, metaclass=KindType):
         kw['watch'] = 'true'
         path = cls._makeLink(name=name, namespace=namespace, **kw)
         return await watcher.watch(path)
+
+
+class ObjectList(KubeDict):
+    apiVersion: required(str)
+    kind: required(str)
+    metadata: required(ListMeta) = ListMeta()
+
+    @classmethod
+    def _subclass_for_kind(cls, kind):
+        typ = type(cls)
+        name = f'{kind.kind}List'
+        subcls = typ.__new__(typ, name, (cls,), {
+            'apiVersion': kind.apiVersion,
+            'kind': name,
+            '__annotations__': {'items': required(list_of(kind))}
+        })
+        subcls._defaults['items'] = []
+        return subcls
 
 
 class CustomResourceDefinitionNames(KubeDict):

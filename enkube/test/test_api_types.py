@@ -15,7 +15,278 @@
 import unittest
 from unittest.mock import patch, MagicMock, sentinel
 
+from .util import AsyncTestCase, dummy_coro
+
 from enkube.api import types
+
+
+class TestKubeDictType(unittest.TestCase):
+    def test_adds_flags_to_annotations(self):
+        class FooDict(metaclass=types.KubeDictType):
+            foo: str
+        self.assertEqual(FooDict.__annotations__, {
+            'foo': (str, set()),
+        })
+
+    def test_copies_annotations_from_bases(self):
+        class FooDict(metaclass=types.KubeDictType):
+            foo: str
+        class BarDict(FooDict):
+            bar: str
+        class BazDict(BarDict):
+            baz: str
+        self.assertEqual(BazDict.__annotations__, {
+            'foo': (str, set()),
+            'bar': (str, set()),
+            'baz': (str, set()),
+        })
+
+    def test_raises_typeerror_if_annotation_isnt_a_type(self):
+        with self.assertRaises(TypeError):
+            class FooDict(metaclass=types.KubeDictType):
+                foo: 1
+
+    def test_required_flag(self):
+        class FooDict(metaclass=types.KubeDictType):
+            foo: types.required(str)
+        self.assertEqual(FooDict.__annotations__, {
+            'foo': (str, {'required'}),
+        })
+
+    def test_list_of_flag(self):
+        class FooDict(metaclass=types.KubeDictType):
+            foo: types.list_of(str)
+        self.assertEqual(FooDict.__annotations__, {
+            'foo': (str, {'list'}),
+        })
+
+    def test_both_flags(self):
+        class FooDict(metaclass=types.KubeDictType):
+            foo: types.required(types.list_of(str))
+        self.assertEqual(FooDict.__annotations__, {
+            'foo': (str, {'list', 'required'}),
+        })
+
+    def test_unknown_flag_raises_valueerror(self):
+        with self.assertRaises(ValueError):
+            class FooDict(metaclass=types.KubeDictType):
+                foo: (str, {'foo'})
+
+    def test_defaults(self):
+        class FooDict(metaclass=types.KubeDictType):
+            foo: str = 'bar'
+        self.assertEqual(FooDict._defaults, {'foo': 'bar'})
+
+    def test_defaults_list(self):
+        class FooDict(metaclass=types.KubeDictType):
+            foo: types.list_of(str) = ['bar', 'baz']
+        self.assertEqual(FooDict._defaults, {'foo': ['bar', 'baz']})
+
+    def test_default_of_incorrect_type_raises_typeerror(self):
+        with self.assertRaises(TypeError):
+            class FooDict(metaclass=types.KubeDictType):
+                foo: str = 1
+
+    def test_default_of_incorrect_type_raises_typeerror_list(self):
+        with self.assertRaises(TypeError):
+            class FooDict(metaclass=types.KubeDictType):
+                foo: types.list_of(str) = 'bar'
+
+    def test_default_of_incorrect_type_raises_typeerror_list_items(self):
+        with self.assertRaises(TypeError):
+            class FooDict(metaclass=types.KubeDictType):
+                foo: types.list_of(str) = ['bar', 1]
+
+    def test_dict_is_default_base(self):
+        class FooDict(metaclass=types.KubeDictType):
+            pass
+        self.assertTrue(issubclass(FooDict, dict))
+
+
+class TestKubeDict(unittest.TestCase):
+    def test_defaults(self):
+        class FooDict(types.KubeDict):
+            foo: str = 'bar'
+        self.assertEqual(FooDict(), {'foo': 'bar'})
+
+    def test_defaults_deepcopies(self):
+        class FooDict(types.KubeDict):
+            foo: types.list_of(dict) = [{'bar': 'baz'}]
+        inst = FooDict()
+        inst.foo[0]['bar'] = 'baaar'
+        inst.foo.append({'qux': 'quux'})
+        self.assertEqual(FooDict._defaults, {'foo': [{'bar': 'baz'}]})
+
+    def test_args(self):
+        class FooDict(types.KubeDict):
+            foo: str = 'bar'
+        self.assertEqual(FooDict({'baz': 'qux'}), {'foo': 'bar', 'baz': 'qux'})
+
+    def test_args_override_defaults(self):
+        class FooDict(types.KubeDict):
+            foo: str = 'bar'
+        self.assertEqual(FooDict({'foo': 'qux'}), {'foo': 'qux'})
+
+    def test_kwargs(self):
+        class FooDict(types.KubeDict):
+            foo: str = 'bar'
+        self.assertEqual(FooDict(baz='qux'), {'foo': 'bar', 'baz': 'qux'})
+
+    def test_kwargs_override_defaults(self):
+        class FooDict(types.KubeDict):
+            foo: str = 'bar'
+        self.assertEqual(FooDict(foo='qux'), {'foo': 'qux'})
+
+    def test_coerces_types(self):
+        class FooDict(types.KubeDict):
+            foo: str
+        self.assertEqual(FooDict(foo=1), {'foo': '1'})
+
+    def test_coerces_types_list(self):
+        class FooDict(types.KubeDict):
+            foo: types.list_of(str)
+        self.assertEqual(FooDict(foo=[1, 2]), {'foo': ['1', '2']})
+
+    def test_coercion_doesnt_fail_when_missing(self):
+        class FooDict(types.KubeDict):
+            foo: str
+        self.assertEqual(FooDict(), {})
+
+    def test_coercion_doesnt_fail_when_not_a_list(self):
+        class FooDict(types.KubeDict):
+            foo: types.list_of(str)
+        self.assertEqual(FooDict(foo=1), {'foo': 1})
+
+    def test_validate_missing_required(self):
+        class FooDict(types.KubeDict):
+            foo: types.required(str)
+        with self.assertRaises(types.ValidationValueError):
+            FooDict()._validate_field_types()
+
+    def test_validate_skips_unknown(self):
+        class FooDict(types.KubeDict):
+            pass
+        FooDict(foo=1)._validate_field_types()
+
+    def test_validate_incorrect_type(self):
+        class FooDict(types.KubeDict):
+            foo: str
+        inst = FooDict()
+        inst['foo'] = 1
+        with self.assertRaises(types.ValidationTypeError):
+            inst._validate_field_types()
+
+    def test_validate_incorrect_type_recursive(self):
+        class BarDict(types.KubeDict):
+            bar: str
+        class FooDict(types.KubeDict):
+            foo: BarDict
+        bar = BarDict()
+        bar['bar'] = 1
+        foo = FooDict()
+        foo['foo'] = bar
+        with self.assertRaises(types.ValidationTypeError):
+            foo._validate_field_types()
+
+    def test_validate_incorrect_type_list(self):
+        class FooDict(types.KubeDict):
+            foo: types.list_of(str)
+        inst = FooDict()
+        inst['foo'] = 1
+        with self.assertRaises(types.ValidationTypeError):
+            inst._validate_field_types()
+
+    def test_validate_incorrect_type_list_items(self):
+        class FooDict(types.KubeDict):
+            foo: types.list_of(str)
+        inst = FooDict()
+        inst['foo'] = ['bar', 1]
+        with self.assertRaises(types.ValidationTypeError):
+            inst._validate_field_types()
+
+    def test_validate_incorrect_type_list_recursive(self):
+        class BarDict(types.KubeDict):
+            bar: str
+        class FooDict(types.KubeDict):
+            foo: types.list_of(BarDict)
+        bar = BarDict()
+        bar['bar'] = 1
+        foo = FooDict()
+        foo['foo'] = [bar]
+        with self.assertRaises(types.ValidationTypeError):
+            foo._validate_field_types()
+
+    def test_validate_calls_validate_field_types(self):
+        class Called(Exception):
+            pass
+        class FooDict(types.KubeDict):
+            def _validate_field_types(self):
+                raise Called()
+        foo = FooDict()
+        with self.assertRaises(Called):
+            foo._validate()
+
+    def test_attribute_access(self):
+        class FooDict(types.KubeDict):
+            foo: str
+        foo = FooDict(foo='bar')
+        self.assertEqual(foo.foo, 'bar')
+
+    def test_attribute_access_not_a_field(self):
+        class FooDict(types.KubeDict):
+            foo: str
+        foo = FooDict(foo='bar')
+        with self.assertRaises(AttributeError):
+            foo.bar
+
+    def test_attribute_access_list_items(self):
+        class FooDictList(types.KubeDict):
+            kind: str = 'FooDictList'
+            items: types.list_of(str)
+        foo = FooDictList(items=['foo', 'bar'])
+        self.assertEqual(list(sorted(foo.items())), [
+            ('items', ['foo', 'bar']),
+            ('kind', 'FooDictList')
+        ])
+        self.assertEqual(foo['items'], ['foo', 'bar'])
+
+    def test_set_attribute(self):
+        class FooDict(types.KubeDict):
+            foo: str
+        foo = FooDict()
+        foo.foo = 'bar'
+        self.assertEqual(foo['foo'], 'bar')
+
+    def test_set_attribute_not_a_field(self):
+        class FooDict(types.KubeDict):
+            foo: str
+        foo = FooDict()
+        foo.bar = 'bar'
+        self.assertNotIn('bar', foo)
+        self.assertEqual(foo.bar, 'bar')
+
+    def test_delete_attribute(self):
+        class FooDict(types.KubeDict):
+            foo: str
+        foo = FooDict(foo='bar')
+        del foo.foo
+        self.assertEqual(foo, {})
+
+    def test_delete_attribute_not_set(self):
+        class FooDict(types.KubeDict):
+            foo: str
+        foo = FooDict()
+        with self.assertRaises(AttributeError):
+            del foo.foo
+
+    def test_delete_attribute_not_a_field(self):
+        class FooDict(types.KubeDict):
+            foo: str
+        foo = FooDict()
+        foo.bar = 'bar'
+        self.assertEqual(foo.__dict__, {'bar': 'bar'})
+        del foo.bar
+        self.assertEqual(foo.__dict__, {})
 
 
 class TestKindType(unittest.TestCase):
@@ -98,7 +369,7 @@ class MyClusterKind(types.Kind):
     apiVersion = 'testing.enkube.local/v1'
 
 
-class TestKind(unittest.TestCase):
+class TestKind(AsyncTestCase):
     def test_selflink(self):
         o = MyNamespacedKind(metadata={'selfLink': 'foobar'})
         self.assertEqual(o._selfLink(), 'foobar')
@@ -181,6 +452,96 @@ class TestKind(unittest.TestCase):
             MyClusterKind._makeLink(foo='bar'),
             '/apis/testing.enkube.local/v1/myclusterkinds?foo=bar'
         )
+
+    async def test_watch(self):
+        async def watch_coro(path):
+            return sentinel.watch
+        watcher = MagicMock()
+        watcher.watch.side_effect = watch_coro
+        self.assertIs(await MyClusterKind._watch(watcher), sentinel.watch)
+        watcher.watch.assert_called_once_with(
+            '/apis/testing.enkube.local/v1/myclusterkinds?watch=true'
+        )
+
+
+class TestObjectList(unittest.TestCase):
+    def test_subclass_for_kind(self):
+        self.assertTrue(issubclass(MyClusterKind.List, types.ObjectList))
+        self.assertEqual(MyClusterKind.List.__name__, 'MyClusterKindList')
+        self.assertEqual(MyClusterKind.List.kind, 'MyClusterKindList')
+        self.assertEqual(MyClusterKind.List.apiVersion, 'testing.enkube.local/v1')
+        self.assertEqual(MyClusterKind.List.__annotations__, {
+            'apiVersion': (str, {'required'}),
+            'kind': (str, {'required'}),
+            'metadata': (types.ListMeta, {'required'}),
+            'items': (MyClusterKind, {'required', 'list'})
+        })
+
+
+class TestCustomResourceDefinition(unittest.TestCase):
+    def test_from_kind_namespaced(self):
+        self.assertEqual(types.CustomResourceDefinition._from_kind(MyNamespacedKind), {
+            'apiVersion': 'apiextensions.k8s.io/v1beta1',
+            'kind': 'CustomResourceDefinition',
+            'metadata': {
+                'name': 'mynamespacedkinds.testing.enkube.local'
+            },
+            'spec': {
+                'group': 'testing.enkube.local',
+                'names': {
+                    'kind': 'MyNamespacedKind',
+                    'plural': 'mynamespacedkinds',
+                    'shortNames': [],
+                    'singular': 'mynamespacedkind'
+                },
+            'scope': 'Namespaced',
+            'version': 'v1'
+            }
+        })
+
+    def test_from_kind_cluster(self):
+        self.assertEqual(types.CustomResourceDefinition._from_kind(MyClusterKind), {
+            'apiVersion': 'apiextensions.k8s.io/v1beta1',
+            'kind': 'CustomResourceDefinition',
+            'metadata': {
+                'name': 'myclusterkinds.testing.enkube.local'
+            },
+            'spec': {
+                'group': 'testing.enkube.local',
+                'names': {
+                    'kind': 'MyClusterKind',
+                    'plural': 'myclusterkinds',
+                    'shortNames': [],
+                    'singular': 'myclusterkind'
+                },
+            'scope': 'Cluster',
+            'version': 'v1'
+            }
+        })
+
+    def test_from_kind_subresources(self):
+        class MySubresourceKind(types.Kind):
+            apiVersion = 'testing.enkube.local/v1'
+            _subresources = {'foo': 'bar'}
+        self.assertEqual(types.CustomResourceDefinition._from_kind(MySubresourceKind), {
+            'apiVersion': 'apiextensions.k8s.io/v1beta1',
+            'kind': 'CustomResourceDefinition',
+            'metadata': {
+                'name': 'mysubresourcekinds.testing.enkube.local'
+            },
+            'spec': {
+                'group': 'testing.enkube.local',
+                'names': {
+                    'kind': 'MySubresourceKind',
+                    'plural': 'mysubresourcekinds',
+                    'shortNames': [],
+                    'singular': 'mysubresourcekind'
+                },
+                'subresources': {'foo': 'bar'},
+            'scope': 'Namespaced',
+            'version': 'v1'
+            }
+        })
 
 
 if __name__ == '__main__':
