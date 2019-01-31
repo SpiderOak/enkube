@@ -73,7 +73,7 @@ class Watch:
         return self, event, exc
 
 
-class Watcher(SyncIter):
+class Watcher(SyncIter, SyncContextManager):
     def __init__(self, api):
         self.api = api
         self._watches = {}
@@ -97,6 +97,12 @@ class Watcher(SyncIter):
             await w.cancel()
         await self._taskgroup.cancel_remaining()
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, typ, val, tb):
+        await self.cancel()
+
     def __aiter__(self):
         return self
 
@@ -108,7 +114,7 @@ class Watcher(SyncIter):
             watch, event, exc = task.result
             if exc:
                 typ, val, tb = exc
-                if issubclass(typ, curio.CancelledError):
+                if issubclass(typ, curio.CancelledError) and watch._closed:
                     continue
                 await watch._spawn()
                 raise typ.with_traceback(val, tb)

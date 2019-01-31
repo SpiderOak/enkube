@@ -19,103 +19,182 @@ from itertools import chain
 import click
 import curio
 
-from .util import close_kernel, sync_wrap
+from .util import close_kernel, sync_wrap, SyncContextManager
 from .plugins import PluginLoader
 from .api.types import CustomResourceDefinition
 from .api.client import ApiClient, ApiError
-from .api.watcher import Watcher
 from .api.cache import Cache
 from .main import pass_env
 
 LOG = logging.getLogger(__name__)
 
 
-async def watch_signals(g):
-    '''Wait for termination signals then cancel taskgroup.'''
-    async with curio.SignalQueue(signal.SIGTERM, signal.SIGINT) as q:
-        sig = await q.get()
+class ControllerType(type):
+    def __new__(cls, name, bases, attrs):
+        crds = {}
+        for b in bases:
+            crds.update(getattr(b, 'crds', {}))
+        crds.update(dict((c._selfLink(), c) for c in attrs.get('crds', ())))
+        attrs['crds'] = crds
+
+        kinds = set()
+        for b in bases:
+            kinds |= getattr(b, 'kinds', set())
+        for k in attrs.get('kinds', ()):
+            if isinstance(k, tuple):
+                k, kw = k
+            else:
+                kw = {}
+            kinds.add((k, frozenset(kw.items())))
+        attrs['kinds'] = kinds
+
+        return super(ControllerType, cls).__new__(cls, name, bases, attrs)
+
+
+class Controller(metaclass=ControllerType):
+    params = ()
+    crds = ()
+    kinds = ()
+
+    def __init__(self, mgr, api, cache):
+        self._taskgroup = curio.TaskGroup()
+        self.mgr = mgr
+        self.api = api
+        self.cache = cache
+
+        if self.crds:
+            cache.subscribe(self._crd_filter, self._crd_event)
+            cache.add_kind(CustomResourceDefinition)
+
+        for k, kw in self.kinds:
+            cache.add_kind(k, **dict(kw))
+
+    async def spawn(self, *args, **kw):
+        return await self._taskgroup.spawn(*args, **kw)
+
+    async def close(self):
+        await self._taskgroup.cancel_remaining()
+        await self._taskgroup.join()
+
+    def _crd_filter(self, event, obj):
+        return event == 'DELETED' and obj._selfLink() in self.crds
+
+    async def _crd_event(self, cache, event, old, new):
         try:
-            signame = signal.Signals(sig).name
-        except ValueError:
-            signame = f'signal {sig}'
-        LOG.info(f'caught {signame}')
-        await g.cancel_remaining()
+            await self.api.create(self.crds[old._selfLink()])
+        except ApiError as err:
+            if err.resp.status_code != 409:
+                raise
 
 
-@sync_wrap
-async def main(api, crds, tasks, kw):
-    LOG.info('starting controller')
+class ControllerManager(SyncContextManager):
+    log = LOG.getChild('ControllerManager')
+    api_client_factory = ApiClient
+    cache_factory = Cache
 
-    crds = dict((c._selfLink(), c) for c in crds)
-    watcher = Watcher(api)
-    cache = Cache(watcher)
+    def __init__(self):
+        self.envs = {}
+        self.controllers = []
+        self._taskgroup = None
 
-    def crd_deleted_event_filter(event, obj):
-        return event == 'DELETED' and obj._selfLink() in crds
+    @sync_wrap
+    async def spawn_controller(self, cls, env, **kw):
+        new_cache = False
+        try:
+            api, cache = self.envs[env]
+        except KeyError:
+            api = self.api_client_factory(env)
+            cache = self.cache_factory(api)
+            self.envs[env] = (api, cache)
+            new_cache = True
 
-    async def recreate_crd(cache, event, old, new):
-        assert event == 'DELETED'
-        path = old._selfLink()
-        if path in crds:
+        c = cls(self, api, cache)
+        self.controllers.append(c)
+
+        if self._taskgroup:
+            if new_cache:
+                await self._taskgroup.spawn(cache.run)
+            else:
+                await cache.resync()
+            await self._taskgroup.spawn(self._run_controller_method, c)
+
+        return c
+
+    @sync_wrap
+    async def run(self, watch_signals=False):
+        if self._taskgroup:
+            raise RuntimeError('controller manager is already running')
+
+        self.log.info('controller manager starting')
+        self._taskgroup = curio.TaskGroup()
+        try:
+            async with self._taskgroup:
+                if watch_signals:
+                    await self._taskgroup.spawn(self._watch_signals)
+                for api, cache in self.envs.values():
+                    await self._taskgroup.spawn(cache.run)
+                for c in self.controllers:
+                    await self._taskgroup.spawn(self._run_controller_method, c)
+
+        finally:
+            self.log.info('controller manager shutting down')
+            async with curio.TaskGroup() as g:
+                for c in self.controllers:
+                    await g.spawn(self._run_controller_method, c, 'close')
+
+    async def _run_controller_method(self, c, name='run'):
+        method = getattr(c, name, None)
+        if not method:
+            return
+        try:
+            await method()
+        except curio.CancelledError:
+            self.log.info(f'{type(c).__name__}.{name} cancelled')
+            raise
+        except Exception:
+            self.log.exception(f'unhandled error in controller {name} method')
+        else:
+            self.log.info(f'{type(c).__name__}.{name} finished')
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, typ, val, tb):
+        if typ:
+            return
+        await self.run(watch_signals=True)
+
+    async def _watch_signals(self):
+        async with curio.SignalQueue(signal.SIGTERM, signal.SIGINT) as q:
+            sig = await q.get()
             try:
-                await api.create(crds[path])
-            except ApiError as err:
-                if err.resp.status_code != 409:
-                    raise
-
-    cache.subscribe(crd_deleted_event_filter, recreate_crd)
-
-    try:
-        if crds:
-            await CustomResourceDefinition._watch(watcher)
-            for crd in crds.values():
-                await recreate_crd(cache, 'DELETED', crd, None)
-
-        async with curio.TaskGroup() as g:
-            await curio.spawn(watch_signals, g, daemon=True)
-            await g.spawn(cache.run)
-
-            for t in tasks:
-                await g.spawn(t, api, watcher, cache, kw)
-
-            async for t in g:
-                LOG.debug(f'task {t.name} finished')
-
-    finally:
-        await watcher.cancel()
-
-    LOG.info('controller exiting')
+                signame = signal.Signals(sig).name
+            except ValueError:
+                signame = f'signal {sig}'
+            self.log.info(f'caught {signame}')
+            await self._taskgroup.cancel_remaining()
 
 
-class CRDLoader(PluginLoader):
-    entrypoint_type = 'enkube.controller.crds'
-
-
-class TaskLoader(PluginLoader):
-    entrypoint_type = 'enkube.controller.tasks'
-
-
-class ParamLoader(PluginLoader):
-    entrypoint_type = 'enkube.controller.params'
+class ControllerLoader(PluginLoader):
+    entrypoint_type = 'enkube.controllers'
 
 
 def cli():
-    crds = list(chain.from_iterable(CRDLoader().load_all()))
-    tasks = list(chain.from_iterable(TaskLoader().load_all()))
-    params = list(chain.from_iterable(ParamLoader().load_all()))
+    controllers = list(chain.from_iterable(ControllerLoader().load_all()))
 
     @click.command()
     @pass_env
     def cli(env, **kw):
         '''Run a Kubernetes controller.'''
         try:
-            with ApiClient(env) as api:
-                kw['api'] = api
-                main(api, crds, tasks, kw)
+            with ControllerManager() as mgr:
+                for controller in controllers:
+                    mgr.spawn_controller(controller, env, **kw)
         finally:
             close_kernel()
 
-    cli.params.extend(params)
+    for controller in controllers:
+        cli.params.extend(controller.params)
 
     return cli
 

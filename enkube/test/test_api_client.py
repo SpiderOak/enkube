@@ -670,6 +670,42 @@ class TestApiClient(AsyncTestCase):
         res = await self.api.getKind('v1', 'FooKind')
         self.assertIs(res, FooKind)
 
+    async def test_check_health_ok(self):
+        async def get_coro(path):
+            return 'ok'
+        self.api.get = MagicMock(side_effect=get_coro)
+        self.assertTrue(await self.api.check_health())
+        self.assertTrue(self.api.healthy.is_set())
+        self.api.get.assert_called_once_with('/healthz')
+
+    async def test_check_health_error(self):
+        await self.api.healthy.set()
+        async def get_coro(path):
+            raise client.ApiError()
+        self.api.get = MagicMock(side_effect=get_coro)
+        self.assertFalse(await self.api.check_health())
+        self.assertFalse(self.api.healthy.is_set())
+
+    async def test_check_health_gibberish(self):
+        await self.api.healthy.set()
+        async def get_coro(path):
+            return 'foo'
+        self.api.get = MagicMock(side_effect=get_coro)
+        self.assertFalse(await self.api.check_health())
+        self.assertFalse(self.api.healthy.is_set())
+
+    @apatch('curio.sleep')
+    async def test_wait_until_healthy(self, sleep):
+        sleep.side_effect = dummy_coro
+        responses = [client.ApiError(), 'ok']
+        async def get_coro(path):
+            return responses.pop(0)
+        self.api.get = MagicMock(side_effect=get_coro)
+        await self.api.wait_until_healthy()
+        self.assertEqual(responses, [])
+        sleep.assert_called_once_with(client.ApiClient._health_check_interval)
+        self.assertTrue(self.api.healthy.is_set())
+
 
 if __name__ == '__main__':
     unittest.main()

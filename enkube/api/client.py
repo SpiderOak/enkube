@@ -101,6 +101,7 @@ class UnixSession(asks.Session):
 class ApiClient(SyncContextManager):
     log = LOG.getChild('ApiClient')
     _max_conns = 20
+    _health_check_interval = 30
 
     def __init__(self, env):
         self.env = env
@@ -113,6 +114,7 @@ class ApiClient(SyncContextManager):
         self._poll_lock = curio.Lock()
         self._apiVersion_cache = {}
         self._kind_cache = {}
+        self.healthy = curio.Event()
 
     async def _poll_proxy(self, wait=False):
         async with self._poll_lock:
@@ -244,6 +246,21 @@ class ApiClient(SyncContextManager):
     patch = partialmethod(request, 'PATCH')
     delete = partialmethod(request, 'DELETE')
     options = partialmethod(request, 'OPTIONS')
+
+    async def check_health(self):
+        try:
+            healthy = (await self.get('/healthz') == 'ok')
+        except ApiError:
+            healthy = False
+        if healthy:
+            await self.healthy.set()
+        else:
+            self.healthy.clear()
+        return healthy
+
+    async def wait_until_healthy(self):
+        while not await self.check_health():
+            await curio.sleep(self._health_check_interval)
 
     async def _get_apiVersion(self, apiVersion):
         path = f"/api{'' if apiVersion == 'v1' else 's'}/{apiVersion}"

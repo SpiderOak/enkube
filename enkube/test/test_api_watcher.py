@@ -32,19 +32,24 @@ class FakeStreamIter:
     async def __anext__(self):
         await curio.sleep(0)
         try:
-            return self.items.pop(0)
+            ret = self.items.pop(0)
         except IndexError:
             raise StopAsyncIteration() from None
+        if isinstance(ret, Exception):
+            raise ret from None
+        return ret
 
 
 class BlockingStreamIter:
     def __init__(self):
+        self.has_blocked = False
         self.gate = curio.Event()
 
     def __atier__(self):
         return self
 
     async def __anext__(self):
+        self.has_blocked = True
         await self.gate.wait()
 
 
@@ -53,9 +58,7 @@ class TestWatch(AsyncTestCase):
         self.stream = FakeStreamIter([])
         async def stream_coro(*args, **kw):
             return self.stream
-        async def kindify_coro(obj):
-            return dict(obj, kindified=True)
-        self.api = MagicMock(**{'get.side_effect': stream_coro, '_kindify.side_effect': kindify_coro})
+        self.api = MagicMock(**{'get.side_effect': stream_coro})
         self.spawned_tasks = []
         async def spawn_coro(*args, **kw):
             task = MagicMock()
@@ -82,6 +85,7 @@ class TestWatch(AsyncTestCase):
         res = await self.watch._get_next()
         self.assertIs(res[0], self.watch)
         self.assertIs(res[1], sentinel.event)
+        self.assertIs(res[2], None)
         self.api.get.assert_called_once_with(sentinel.path, stream=True)
 
     async def test_get_next_with_stream(self):
@@ -90,6 +94,7 @@ class TestWatch(AsyncTestCase):
         res = await self.watch._get_next()
         self.assertIs(res[0], self.watch)
         self.assertIs(res[1], sentinel.event)
+        self.assertIs(res[2], None)
         self.api.get.assert_not_called()
 
     async def test_get_next_restarts_after_stream_finishes(self):
@@ -103,6 +108,7 @@ class TestWatch(AsyncTestCase):
         res = await self.watch._get_next()
         self.assertIs(res[0], self.watch)
         self.assertIs(res[1], sentinel.event)
+        self.assertIs(res[2], None)
         self.assertEqual(self.api.get.call_args_list, [
             ((sentinel.path,), {'stream': True}),
             ((sentinel.path,), {'stream': True}),
@@ -111,10 +117,12 @@ class TestWatch(AsyncTestCase):
     async def test_get_next_returns_none_when_blocked_on_stream_and_canceled(self):
         self.stream = BlockingStreamIter()
         self.watch._current_task = t = await curio.spawn(self.watch._get_next)
-        await curio.sleep(0)
+        while not self.stream.has_blocked:
+            await curio.sleep(0)
         await self.watch.cancel()
         self.assertIs(t.result[0], self.watch)
         self.assertIs(t.result[1], None)
+        self.assertTrue(isinstance(t.result[2][1], curio.CancelledError))
 
     async def test_get_next_returns_none_when_blocked_on_get_and_canceled(self):
         async def block_coro(*args, **kw):
@@ -125,6 +133,7 @@ class TestWatch(AsyncTestCase):
         await self.watch.cancel()
         self.assertIs(t.result[0], self.watch)
         self.assertIs(t.result[1], None)
+        self.assertTrue(isinstance(t.result[2][1], curio.CancelledError))
 
     async def test_cancel(self):
         await self.watch.cancel()
@@ -150,7 +159,8 @@ class TestWatcher(AsyncTestCase):
         async def stream_coro(*args, **kw):
             await curio.sleep(0)
             return FakeStreamIter([
-                {'type': event, 'object': obj} for event, obj in self.events
+                evt if isinstance(evt, Exception) else {'type': evt[0], 'object': evt[1]}
+                for evt in self.events
             ])
         async def kindify_coro(obj):
             return dict(obj, kindified=True)
@@ -246,17 +256,28 @@ class TestWatcher(AsyncTestCase):
         async def get_coro(path, *args, **kw):
             return FakeStreamIter([{'type': 'FOO', 'object': path}])
         self.api.get.side_effect = get_coro
+
+        res = []
+        async def watch_task():
+            async for event, obj in self.watcher:
+                res.append((event, obj))
+
         w1 = await self.watcher.watch('/foo')
         w2 = await self.watcher.watch('/bar')
-        while self.watcher._taskgroup._running:
-            await curio.sleep(0)
-        await w2.cancel()
-        res = []
-        async for event, obj in self.watcher:
-            while self.watcher._taskgroup._running:
+
+        async with curio.TaskGroup() as g:
+            await g.spawn(watch_task)
+
+            while len(res) < 2:
+                await curio.sleep(0)
+            await w2.cancel()
+
+            while len(res) == 2:
                 await curio.sleep(0)
             await w1.cancel()
-            res.append((event, obj))
+
+            await curio.sleep(0)
+
         self.assertEqual(res, [
             ('FOO', '/foo'),
             ('FOO', '/bar'),
@@ -269,10 +290,28 @@ class TestWatcher(AsyncTestCase):
             return stream
         self.api.get.side_effect = get_coro
         w = await self.watcher.watch('/foo')
+        while not stream.has_blocked:
+            await curio.sleep(0)
         await w.cancel()
         res = []
         async for event, obj in self.watcher:
             res.append((event, obj))
+        self.assertEqual(res, [])
+
+    async def test_external_cancellation_is_propagated(self):
+        stream = BlockingStreamIter()
+        async def get_coro(path, *args, **kw):
+            return stream
+        self.api.get.side_effect = get_coro
+        w1 = await self.watcher.watch('/foo')
+        w2 = await self.watcher.watch('/bar')
+        while not stream.has_blocked:
+            await curio.sleep(0)
+        await w1._current_task.cancel()
+        res = []
+        with self.assertRaises(curio.CancelledError):
+            async for event, obj in self.watcher:
+                res.append((event, obj))
         self.assertEqual(res, [])
 
     async def test_cancel_blocked_watch_after_iteration(self):
@@ -280,18 +319,49 @@ class TestWatcher(AsyncTestCase):
             FakeStreamIter([{'type': 'FOO', 'object': 'foo'}]),
             BlockingStreamIter(),
         ]
+        blocker = streams[-1]
         async def get_coro(path, *args, **kw):
             return streams.pop(0)
         self.api.get.side_effect = get_coro
-        w = await self.watcher.watch('/foo')
+
         res = []
-        async for event, obj in self.watcher:
-            res.append((event, obj))
+        async def watch_task():
+            async for event, obj in self.watcher:
+                res.append((event, obj))
+
+        w = await self.watcher.watch('/foo')
+
+        async with curio.TaskGroup() as g:
+            await g.spawn(watch_task)
+
+            while not blocker.has_blocked:
+                await curio.sleep(0)
+
             await w.cancel()
+            await curio.sleep(0)
+
         self.assertEqual(res, [('FOO', 'foo')])
 
     async def test_ungraceful_shutdown(self):
         await self.watcher.watch('/foo')
+
+    async def test_context_manager_cancels_on_exit(self):
+        self.watcher.cancel = MagicMock(side_effect=dummy_coro)
+        async with self.watcher as ret:
+            self.assertIs(ret, self.watcher)
+        self.watcher.cancel.assert_called_once_with()
+
+    async def test_handles_stream_errors(self):
+        self.events = [
+            ('ADDED', {'foo': 1}),
+            RuntimeError(),
+            ('DELETED', {'foo': 1}),
+        ]
+        await self.watcher.watch('/foobar')
+        self.assertEqual(await self.watcher.__anext__(), ('ADDED', {'foo': 1, 'kindified': True}))
+        with self.assertRaises(RuntimeError):
+            await self.watcher.__anext__()
+        self.assertEqual(await self.watcher.__anext__(), ('DELETED', {'foo': 1, 'kindified': True}))
 
 
 if __name__ == '__main__':

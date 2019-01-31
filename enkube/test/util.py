@@ -17,6 +17,7 @@ import unittest
 from unittest.mock import patch
 from functools import wraps
 
+import curio
 from curio.meta import iscoroutinefunction
 
 from ..util import get_kernel, close_kernel

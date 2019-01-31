@@ -66,6 +66,11 @@ class TestKubeDictType(unittest.TestCase):
         self.assertEqual(FooDict.__annotations__, {
             'foo': (str, {'list', 'required'}),
         })
+        class FooDict(metaclass=types.KubeDictType):
+            foo: types.list_of(types.required(str))
+        self.assertEqual(FooDict.__annotations__, {
+            'foo': (str, {'list', 'required'}),
+        })
 
     def test_unknown_flag_raises_valueerror(self):
         with self.assertRaises(ValueError):
