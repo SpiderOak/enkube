@@ -101,15 +101,15 @@ class TestController(AsyncTestCase):
         class MyController(controller.Controller):
             crds = [crd]
         cache = MagicMock()
-        c = MyController(sentinel.mgr, sentinel.api, cache)
+        c = MyController(sentinel.mgr, sentinel.env, sentinel.api, cache)
         cache.subscribe.assert_called_once_with(c._crd_filter, c._crd_event)
         cache.add_kind.assert_called_once_with(CustomResourceDefinition)
 
     def test_init_skips_crd_handler_when_none_defined(self):
         cache = MagicMock()
-        c = controller.Controller(sentinel.mgr, sentinel.api, cache)
-        self.assertFalse(cache.subscribe.called)
-        self.assertFalse(cache.add_kind.called)
+        c = controller.Controller(sentinel.mgr, sentinel.env, sentinel.api, cache)
+        cache.subscribe.assert_not_called()
+        cache.add_kind.assert_not_called()
 
     def test_init_adds_kinds_to_cache(self):
         class FooController(controller.Controller):
@@ -120,7 +120,7 @@ class TestController(AsyncTestCase):
                 (BarKind, {'bar_arg': 'bar'}),
             ]
         cache = MagicMock()
-        c = FooController(sentinel.mgr, sentinel.api, cache)
+        c = FooController(sentinel.mgr, sentinel.env, sentinel.api, cache)
         cache.add_kind.assert_has_calls([
             (('v1/Kind1',),),
             (('v1/Kind2',), {'kind2_arg': 'foo'}),
@@ -136,7 +136,7 @@ class TestController(AsyncTestCase):
         ]
         class MyController(controller.Controller):
             crds = all_crds
-        c = MyController(sentinel.mgr, sentinel.api, MagicMock())
+        c = MyController(sentinel.mgr, sentinel.env, sentinel.api, MagicMock())
         for crd in all_crds:
             self.assertTrue(c._crd_filter('DELETED', crd))
             self.assertFalse(c._crd_filter('ADDED', crd))
@@ -144,33 +144,35 @@ class TestController(AsyncTestCase):
         self.assertFalse(c._crd_filter('DELETED', MagicMock(**{'_selfLink.return_value': 3})))
 
     async def test_crd_event(self):
-        api = MagicMock(**{'create.side_effect': dummy_coro})
-        c = controller.Controller(sentinel.mgr, api, MagicMock())
+        c = controller.Controller(sentinel.mgr, sentinel.env, sentinel.api, MagicMock())
+        c.ensure_object = MagicMock(side_effect=dummy_coro)
         crd = MagicMock()
         c.crds = {crd._selfLink.return_value: crd}
         await c._crd_event(c.cache, 'DELETED', crd, None)
-        api.create.assert_called_once_with(crd)
+        c.ensure_object.assert_called_once_with(crd)
 
-    async def test_crd_event_ignores_conflict(self):
+    async def test_ensure_object(self):
+        api = MagicMock(**{'create.side_effect': dummy_coro})
+        c = controller.Controller(sentinel.mgr, sentinel.env, api, MagicMock())
+        await c.ensure_object(sentinel.obj)
+        api.create.assert_called_once_with(sentinel.obj)
+
+    async def test_ensure_object_ignores_conflict(self):
         async def conflict_coro(*args, **kw):
             raise ApiError(MagicMock(status_code=409))
         api = MagicMock(**{'create.side_effect': conflict_coro})
-        c = controller.Controller(sentinel.mgr, api, MagicMock())
-        crd = MagicMock()
-        c.crds = {crd._selfLink.return_value: crd}
-        await c._crd_event(c.cache, 'DELETED', crd, None)
-        api.create.assert_called_once_with(crd)
+        c = controller.Controller(sentinel.mgr, sentinel.env, api, MagicMock())
+        await c.ensure_object(sentinel.obj)
+        api.create.assert_called_once_with(sentinel.obj)
 
-    async def test_crd_event_raises_non_conflict_errors(self):
+    async def test_ensure_object_raises_non_conflict_errors(self):
         async def conflict_coro(*args, **kw):
             raise ApiError(MagicMock(status_code=500))
         api = MagicMock(**{'create.side_effect': conflict_coro})
-        c = controller.Controller(sentinel.mgr, api, MagicMock())
-        crd = MagicMock()
-        c.crds = {crd._selfLink.return_value: crd}
+        c = controller.Controller(sentinel.mgr, sentinel.env, api, MagicMock())
         with self.assertRaises(ApiError):
-            await c._crd_event(c.cache, 'DELETED', crd, None)
-        api.create.assert_called_once_with(crd)
+            await c.ensure_object(sentinel.obj)
+        api.create.assert_called_once_with(sentinel.obj)
 
     async def test_spawn_and_close(self):
         expected_args = [((sentinel.arg1, sentinel.arg2), {})]
@@ -178,7 +180,7 @@ class TestController(AsyncTestCase):
         async def my_coro(*args, **kw):
             call_args.append((args, kw))
             await curio.Event().wait()
-        c = controller.Controller(sentinel.mgr, sentinel.api, MagicMock())
+        c = controller.Controller(sentinel.mgr, sentinel.env, sentinel.api, MagicMock())
         t = await c.spawn(my_coro, *expected_args[0][0], **expected_args[0][1])
         self.assertEqual(t.name.rsplit('.', 1)[-1], 'my_coro')
         while not call_args:
@@ -188,16 +190,25 @@ class TestController(AsyncTestCase):
 
 
 def mock_controller_cls(run_coro=dummy_coro, close_coro=dummy_coro):
-    return MagicMock(**{
-        'return_value.run.side_effect': run_coro,
-        'return_value.close.side_effect': close_coro,
-    })
+    return MagicMock(side_effect=lambda mgr, env, api, cache, **kw: MagicMock(**dict({
+        'mgr': mgr, 'env': env, 'api': api, 'cache': cache,
+        'run.side_effect': run_coro,
+        'close.side_effect': close_coro,
+    }, **kw)))
 
 
 def mock_cache(run_coro=dummy_coro, resync_coro=dummy_coro):
     return MagicMock(**{
+        '_controller_run_task': None,
         'run.side_effect': run_coro,
         'resync.side_effect': resync_coro,
+    })
+
+
+def mock_api_client_factory(env):
+    return MagicMock(**{
+        'env': env,
+        'close.side_effect': dummy_coro,
     })
 
 
@@ -213,73 +224,117 @@ class TestControllerManager(AsyncTestCase):
     def setUp(self):
         self.mgr = controller.ControllerManager()
         self.mgr.log = MagicMock()
-        self.api = MagicMock()
+        self.api = mock_api_client_factory(sentinel.env)
         self.cache = mock_cache()
-        self.mgr.envs[sentinel.env] = (self.api, self.cache)
+        self.mgr.envs[sentinel.env] = (self.api, self.cache, 1)
         self.mgr._run_controller_method = MagicMock(side_effect=self.mgr._run_controller_method)
 
     async def test_spawn_controller(self):
         cls = mock_controller_cls()
-        c = await self.mgr.spawn_controller(cls, sentinel.env)
-        self.assertIs(c, cls.return_value)
-        cls.assert_called_once_with(self.mgr, self.api, self.cache)
+        kw = {'foo': 1, 'bar': 2}
+        c = await self.mgr.spawn_controller(cls, sentinel.env, **kw)
+        self.assertIs(c.env, sentinel.env)
+        cls.assert_called_once_with(self.mgr, sentinel.env, self.api, self.cache, **kw)
+        self.assertEqual(self.mgr.envs[sentinel.env][2], 2)
 
     async def test_spawn_controller_creates_api_and_cache(self):
-        self.mgr.api_client_factory = af = MagicMock()
+        new_api = mock_api_client_factory(sentinel.new_env)
+        self.mgr.api_client_factory = af = MagicMock(return_value=new_api)
         self.mgr.cache_factory = cf = MagicMock()
         cls = mock_controller_cls()
         await self.mgr.spawn_controller(cls, sentinel.new_env)
-        cls.assert_called_once_with(self.mgr, af.return_value, cf.return_value)
+        cls.assert_called_once_with(self.mgr, sentinel.new_env, new_api, cf.return_value)
         af.assert_called_once_with(sentinel.new_env)
-        cf.assert_called_once_with(af.return_value)
-        api, cache = self.mgr.envs[sentinel.new_env]
-        self.assertIs(api, af.return_value)
+        cf.assert_called_once_with(new_api)
+        api, cache, refs = self.mgr.envs[sentinel.new_env]
+        self.assertIs(api, new_api)
         self.assertIs(cache, cf.return_value)
+        self.assertEqual(refs, 1)
+
+    async def test_stop_controller(self):
+        ct = self.cache._controller_run_task = MagicMock(**{'cancel.side_effect': dummy_coro})
+        c1 = mock_controller_cls()(self.mgr, sentinel.env, self.api, self.cache)
+        c2 = mock_controller_cls()(self.mgr, sentinel.env, self.api, self.cache)
+        self.mgr.controllers.add(c1)
+        self.mgr.controllers.add(c2)
+        self.mgr.envs[sentinel.env] = (self.api, self.cache, 2)
+        await self.mgr.stop_controller(c1)
+        c1.close.assert_called_once_with()
+        c2.close.assert_not_called()
+        self.assertEqual(self.mgr.envs[sentinel.env], (self.api, self.cache, 1))
+        self.assertEqual(self.mgr.controllers, {c2})
+        ct.cancel.assert_not_called()
+        self.api.close.assert_not_called()
+        self.mgr.log.info.assert_has_calls([
+            call('stopping MagicMock'),
+        ])
+
+        await self.mgr.stop_controller(c2)
+        c2.close.assert_called_once_with()
+        self.assertNotIn(sentinel.env, self.mgr.envs)
+        self.assertEqual(self.mgr.controllers, set())
+        ct.cancel.assert_called_once_with()
+        self.api.close.assert_called_once_with()
+        self.mgr.log.info.assert_has_calls([
+            call('stopping MagicMock'),
+            call('stopping MagicMock'),
+            call('shutting down cache and api for env'),
+        ])
+
+    async def test_stop_controller_before_run(self):
+        c = mock_controller_cls()(self.mgr, sentinel.env, self.api, self.cache)
+        self.mgr.controllers.add(c)
+        await self.mgr.stop_controller(c)
+        self.assertEqual(self.mgr.envs, {})
+        self.assertEqual(self.mgr.controllers, set())
+        self.api.close.assert_called_once_with()
+
+    async def test_stop_controller_raises_runtimeerror_if_controller_not_running(self):
+        c = mock_controller_cls()(self.mgr, sentinel.env, self.api, self.cache)
+        with self.assertRaises(RuntimeError) as err:
+            await self.mgr.stop_controller(c)
+        self.assertEqual(err.exception.args[0], 'controller has not been spawned by this manager')
+        c.close.assert_not_called()
+
+    async def test_stop_controller_logs_exceptions(self):
+        class FooError(Exception):
+            pass
+        async def close_coro():
+            raise FooError()
+        c = mock_controller_cls(close_coro=close_coro)(self.mgr, sentinel.env, self.api, self.cache)
+        self.mgr.controllers.add(c)
+        await self.mgr.stop_controller(c)
+        self.mgr.log.exception.assert_called_once_with(
+            'unhandled error in controller close method')
 
     async def test_run(self):
+        self.mgr._run_cache = MagicMock(side_effect=dummy_coro)
         c1 = await self.mgr.spawn_controller(mock_controller_cls(), sentinel.env)
         c2 = await self.mgr.spawn_controller(mock_controller_cls(), sentinel.env)
         await self.mgr.run()
-        self.cache.run.assert_called_once_with()
+        self.mgr._run_cache.assert_called_once_with(self.cache)
+        self.assertEqual(self.cache._controller_run_task.name, 'dummy_coro')
         c1.run.assert_called_once_with()
         c2.run.assert_called_once_with()
         c1.close.assert_called_once_with()
         c2.close.assert_called_once_with()
-        self.mgr._run_controller_method.assert_has_calls([call(c1), call(c2)])
+        self.mgr._run_controller_method.assert_has_calls([call(c1), call(c2)], any_order=True)
         self.mgr.log.info.assert_has_calls([
             call('controller manager starting'),
+            call('running MagicMock'),
             call('MagicMock.run finished'),
+            call('running MagicMock'),
             call('MagicMock.run finished'),
-            call('controller manager shutting down'),
-            call('MagicMock.close finished'),
-            call('MagicMock.close finished'),
+            call('stopping MagicMock'),
+            call('stopping MagicMock'),
+            call('controller manager finished'),
         ])
-        self.assertFalse(self.mgr.log.exception.called)
+        self.mgr.log.exception.assert_not_called()
 
     async def test_run_watch_signals(self):
         self.mgr._watch_signals = MagicMock(side_effect=dummy_coro)
         await self.mgr.run(watch_signals=True)
         self.mgr._watch_signals.assert_called_once_with()
-
-    async def test_run_logs_exceptions_when_closing_controllers(self):
-        class FooError(Exception):
-            pass
-        async def close_coro():
-            raise FooError()
-        c1 = await self.mgr.spawn_controller(mock_controller_cls(close_coro=close_coro), sentinel.env)
-        c2 = await self.mgr.spawn_controller(mock_controller_cls(), sentinel.env)
-        await self.mgr.run()
-        c1.close.assert_called_once_with()
-        c2.close.assert_called_once_with()
-        self.mgr.log.info.assert_has_calls([
-            call('controller manager starting'),
-            call('MagicMock.run finished'),
-            call('MagicMock.run finished'),
-            call('controller manager shutting down'),
-            call('MagicMock.close finished'),
-        ])
-        self.mgr.log.exception.assert_called_once_with(
-            'unhandled error in controller close method')
 
     async def test_run_while_running_raises_runtimeerror(self):
         exceptions = []
@@ -317,11 +372,14 @@ class TestControllerManager(AsyncTestCase):
         c2.close.assert_called_once_with()
 
     async def test_spawn_controller_while_running(self):
+        self.mgr._run_cache = MagicMock(side_effect=dummy_coro)
+        api2 = mock_api_client_factory(sentinel.env2)
+        api3 = mock_api_client_factory(sentinel.env3)
         cache2 = mock_cache()
         cache3 = mock_cache()
-        self.mgr.api_client_factory = MagicMock()
+        self.mgr.api_client_factory = MagicMock(return_value=api3)
         self.mgr.cache_factory = MagicMock(return_value=cache3)
-        self.mgr.envs[sentinel.env2] = (MagicMock(), cache2)
+        self.mgr.envs[sentinel.env2] = (api2, cache2, 1)
 
         async def run_coro():
             self.c3 = await self.mgr.spawn_controller(mock_controller_cls(), sentinel.env)
@@ -331,7 +389,8 @@ class TestControllerManager(AsyncTestCase):
         await self.mgr.run()
 
         self.mgr._run_controller_method.assert_has_calls([
-            call(c1), call(c2), call(self.c3), call(self.c4)])
+            call(c1), call(c2), call(self.c3), call(self.c4)
+        ], any_order=True)
         c1.run.assert_called_once_with()
         c2.run.assert_called_once_with()
         self.c3.run.assert_called_once_with()
@@ -342,56 +401,94 @@ class TestControllerManager(AsyncTestCase):
         self.c3.close.assert_called_once_with()
         self.c4.close.assert_called_once_with()
 
-        self.cache.run.assert_called_once_with()
-        cache2.run.assert_called_once_with()
-        cache3.run.assert_called_once_with()
+        self.assertEqual(self.cache._controller_run_task.name, 'dummy_coro')
+        self.assertEqual(cache2._controller_run_task.name, 'dummy_coro')
+        self.assertIs(cache3._controller_run_task, None)
+
+        self.mgr._run_cache.assert_has_calls([
+            call(self.cache),
+            call(cache2),
+            call(cache3),
+        ])
 
         self.cache.resync.assert_called_once_with()
-        self.assertFalse(cache2.resync.called)
-        self.assertFalse(cache3.resync.called)
+        cache2.resync.assert_not_called()
+        cache3.resync.assert_not_called()
+
+    async def test_run_cache(self):
+        c = MagicMock(**{'run.side_effect': dummy_coro})
+        await self.mgr._run_cache(c)
+        c.run.assert_called_once_with()
+
+    async def test_run_cache_logs_exceptions(self):
+        class FooError(Exception):
+            pass
+        async def run_coro():
+            raise FooError()
+        c = MagicMock(**{'run.side_effect': run_coro})
+        await self.mgr._run_cache(c)
+        c.run.assert_called_once_with()
+        self.mgr.log.exception.assert_called_once_with(
+            'unhandled error in cache run method')
+
+    async def test_run_cache_propagates_cancellederror(self):
+        async def run_coro():
+            raise curio.TaskCancelled()
+        c = MagicMock(**{'run.side_effect': run_coro})
+        with self.assertRaises(curio.CancelledError):
+            await self.mgr._run_cache(c)
+        self.mgr.log.exception.assert_not_called()
 
     async def test_run_controller_method(self):
-        c = mock_controller_cls()(self.mgr, sentinel.api, sentinel.cache)
+        c = mock_controller_cls()(self.mgr, sentinel.env, sentinel.api, sentinel.cache)
         await self.mgr._run_controller_method(c)
         c.run.assert_called_once_with()
-        self.assertFalse(self.mgr.log.debug.called)
-        self.mgr.log.info.assert_called_once_with('MagicMock.run finished')
-        self.assertFalse(self.mgr.log.exception.called)
+        self.mgr.log.debug.assert_not_called()
+        self.mgr.log.info.assert_has_calls([
+            call('running MagicMock'),
+            call('MagicMock.run finished'),
+        ])
+        self.mgr.log.exception.assert_not_called()
 
     async def test_run_controller_method_passed_name(self):
         c = MagicMock(**{'foo.side_effect': dummy_coro})
         await self.mgr._run_controller_method(c, 'foo')
         c.foo.assert_called_once_with()
-        self.assertFalse(self.mgr.log.debug.called)
+        self.mgr.log.debug.assert_not_called()
         self.mgr.log.info.assert_called_once_with('MagicMock.foo finished')
-        self.assertFalse(self.mgr.log.exception.called)
+        self.mgr.log.exception.assert_not_called()
 
     async def test_run_controller_method_does_nothing_if_method_doesnt_exist(self):
         await self.mgr._run_controller_method(
-            controller.Controller(self.mgr, sentinel.api, sentinel.cache))
-        self.assertFalse(self.mgr.log.debug.called)
-        self.assertFalse(self.mgr.log.info.called)
-        self.assertFalse(self.mgr.log.exception.called)
+            controller.Controller(self.mgr, sentinel.env, sentinel.api, sentinel.cache))
+        self.mgr.log.debug.assert_not_called()
+        self.mgr.log.info.assert_not_called()
+        self.mgr.log.exception.assert_not_called()
 
     async def test_run_controller_logs_exceptions(self):
         class FooError(Exception):
             pass
         async def run_coro():
             raise FooError()
-        c = mock_controller_cls(run_coro=run_coro)(self.mgr, sentinel.api, sentinel.cache)
+        c = mock_controller_cls(run_coro=run_coro)(
+            self.mgr, sentinel.env, sentinel.api, sentinel.cache)
         await self.mgr._run_controller_method(c)
-        self.assertFalse(self.mgr.log.info.called)
+        self.mgr.log.info.assert_called_once_with('running MagicMock')
         self.mgr.log.exception.assert_called_once_with(
             'unhandled error in controller run method')
 
     async def test_run_controller_propagates_cancellederror(self):
         async def run_coro():
             raise curio.TaskCancelled()
-        c = mock_controller_cls(run_coro=run_coro)(self.mgr, sentinel.api, sentinel.cache)
+        c = mock_controller_cls(run_coro=run_coro)(
+            self.mgr, sentinel.env, sentinel.api, sentinel.cache)
         with self.assertRaises(curio.CancelledError):
             await self.mgr._run_controller_method(c)
-        self.mgr.log.info.assert_called_once_with('MagicMock.run cancelled')
-        self.assertFalse(self.mgr.log.exception.called)
+        self.mgr.log.info.assert_has_calls([
+            call('running MagicMock'),
+            call('MagicMock.run cancelled'),
+        ])
+        self.mgr.log.exception.assert_not_called()
 
     async def test_context_manager(self):
         self.mgr._watch_signals = dummy_coro
@@ -408,7 +505,7 @@ class TestControllerManager(AsyncTestCase):
         with self.assertRaises(FooError):
             async with self.mgr as m:
                 raise FooError()
-        self.assertFalse(m.run.called)
+        m.run.assert_not_called()
 
     @apatch('curio.SignalQueue')
     async def test_watch_signals(self, sq):

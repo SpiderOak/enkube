@@ -69,7 +69,6 @@ class TestCache(AsyncTestCase):
         KindType.instances = {(FooKind.apiVersion, FooKind.kind): FooKind}
         self.list = []
         self.events = []
-        self.api = MagicMock()
         async def get_coro(path):
             items = self.list[:]
             del self.list[:]
@@ -77,10 +76,13 @@ class TestCache(AsyncTestCase):
                 metadata={'resourceVersion': 'fooversion'},
                 items=items,
             )
-        self.api.get.side_effect = get_coro
         async def getkind_coro(apiVersion, kind):
             return Kind.getKind(apiVersion, kind)
-        self.api.getKind.side_effect = getkind_coro
+        self.api = MagicMock(**{
+            'wait_until_healthy.side_effect': dummy_coro,
+            'get.side_effect': get_coro,
+            'getKind.side_effect': getkind_coro,
+        })
         self.watcher = FakeWatcher(self.events)
         self.cache = cache.Cache(self.api, [(FooKind, {})], lambda api: self.watcher)
 
@@ -484,6 +486,20 @@ class TestCache(AsyncTestCase):
         log.exception.assert_called_once_with('unhandled error in subscription handler')
         self.assertFalse(receiver1.called)
         self.assertTrue(receiver2.called)
+
+    async def test_run_waits_until_api_is_healthy(self):
+        has_waited = curio.Event()
+        is_ready = curio.Event()
+        async def wait_coro():
+            await has_waited.set()
+            await is_ready.wait()
+        self.api.wait_until_healthy.side_effect = wait_coro
+        async with curio.TaskGroup() as g:
+            await g.spawn(self.cache.run)
+            await has_waited.wait()
+            self.api.getKind.assert_not_called()
+            self.api.get.assert_not_called()
+            await is_ready.set()
 
     async def test_run_ignores_watch_iteration_errors(self):
         exceptions = [RuntimeError()]

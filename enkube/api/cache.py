@@ -58,6 +58,7 @@ class Cache(dict):
                 break
 
     async def _run(self):
+        await self.api.wait_until_healthy()
         versions = {}
         warmup_notifications = []
         seen = set()

@@ -126,6 +126,7 @@ class Environment:
 
 class TempEnvironment(Environment):
     def __init__(self, kubeconfig=None):
+        self.kubeconfig = kubeconfig
         self.tempdir = tempfile.TemporaryDirectory()
         super(TempEnvironment, self).__init__()
         if kubeconfig:

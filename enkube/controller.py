@@ -56,9 +56,10 @@ class Controller(metaclass=ControllerType):
     crds = ()
     kinds = ()
 
-    def __init__(self, mgr, api, cache):
+    def __init__(self, mgr, env, api, cache, **kw):
         self._taskgroup = curio.TaskGroup()
         self.mgr = mgr
+        self.env = env
         self.api = api
         self.cache = cache
 
@@ -80,8 +81,11 @@ class Controller(metaclass=ControllerType):
         return event == 'DELETED' and obj._selfLink() in self.crds
 
     async def _crd_event(self, cache, event, old, new):
+        await self.ensure_object(self.crds[old._selfLink()])
+
+    async def ensure_object(self, obj):
         try:
-            await self.api.create(self.crds[old._selfLink()])
+            await self.api.create(obj)
         except ApiError as err:
             if err.resp.status_code != 409:
                 raise
@@ -94,31 +98,59 @@ class ControllerManager(SyncContextManager):
 
     def __init__(self):
         self.envs = {}
-        self.controllers = []
+        self.controllers = set()
         self._taskgroup = None
 
     @sync_wrap
     async def spawn_controller(self, cls, env, **kw):
         new_cache = False
         try:
-            api, cache = self.envs[env]
+            api, cache, refs = self.envs[env]
         except KeyError:
             api = self.api_client_factory(env)
             cache = self.cache_factory(api)
-            self.envs[env] = (api, cache)
+            cache._controller_run_task = None
+            self.envs[env] = (api, cache, 1)
             new_cache = True
+        else:
+            self.envs[env] = (api, cache, refs + 1)
 
-        c = cls(self, api, cache)
-        self.controllers.append(c)
+        c = cls(self, env, api, cache, **kw)
+        self.controllers.add(c)
 
         if self._taskgroup:
             if new_cache:
-                await self._taskgroup.spawn(cache.run)
+                self.log.debug('starting cache')
+                cache._controller_run_task = await self._taskgroup.spawn(
+                    self._run_cache, cache)
             else:
+                self.log.debug('resyncing cache')
                 await cache.resync()
             await self._taskgroup.spawn(self._run_controller_method, c)
 
         return c
+
+    @sync_wrap
+    async def stop_controller(self, c):
+        if c not in self.controllers:
+            raise RuntimeError('controller has not been spawned by this manager')
+        self.log.info(f'stopping {type(c).__name__}')
+        try:
+            await c.close()
+        except Exception:
+            self.log.exception(f'unhandled error in controller close method')
+        self.controllers.remove(c)
+        api, cache, refs = self.envs[c.env]
+        refs -= 1
+        if refs <= 0:
+            self.log.info('shutting down cache and api for env')
+            del self.envs[c.env]
+            if cache._controller_run_task:
+                await cache._controller_run_task.cancel()
+                cache._controller_run_task = None
+            await api.close()
+        else:
+            self.envs[c.env] = (api, cache, refs)
 
     @sync_wrap
     async def run(self, watch_signals=False):
@@ -131,21 +163,32 @@ class ControllerManager(SyncContextManager):
             async with self._taskgroup:
                 if watch_signals:
                     await self._taskgroup.spawn(self._watch_signals)
-                for api, cache in self.envs.values():
-                    await self._taskgroup.spawn(cache.run)
+                for api, cache, refs in self.envs.values():
+                    cache._controller_run_task = await self._taskgroup.spawn(
+                        self._run_cache, cache)
                 for c in self.controllers:
                     await self._taskgroup.spawn(self._run_controller_method, c)
 
         finally:
-            self.log.info('controller manager shutting down')
             async with curio.TaskGroup() as g:
                 for c in self.controllers:
-                    await g.spawn(self._run_controller_method, c, 'close')
+                    await g.spawn(self.stop_controller, c)
+            self.log.info('controller manager finished')
+
+    async def _run_cache(self, cache):
+        try:
+            await cache.run()
+        except curio.CancelledError:
+            raise
+        except Exception:
+            self.log.exception('unhandled error in cache run method')
 
     async def _run_controller_method(self, c, name='run'):
         method = getattr(c, name, None)
         if not method:
             return
+        if name == 'run':
+            self.log.info(f'running {type(c).__name__}')
         try:
             await method()
         except curio.CancelledError:
