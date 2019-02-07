@@ -146,46 +146,49 @@ def print_change(action, args, local, cluster):
         print_diff(cluster[ns][k,n], local[ns][k,n])
 
 
-@click.command()
-@click.option(
-    '--last-applied/--no-last-applied', default=True,
-    help='Compare using last-applied-configuration annotation.'
-)
-@click.option('--show-deleted/--no-show-deleted', default=False)
-@click.option('--quiet', '-q', is_flag=True)
-@click.option(
-    '--list', '-l', 'list_', is_flag=True,
-    help='Only list names of changed objects'
-)
-@pass_renderer
-def cli(renderer, last_applied, show_deleted, quiet, list_):
-    '''Show differences between rendered manifests and running state.
+def cli():
+    @click.command()
+    @click.option(
+        '--last-applied/--no-last-applied', default=True,
+        help='Compare using last-applied-configuration annotation.'
+    )
+    @click.option('--show-deleted/--no-show-deleted', default=False)
+    @click.option('--quiet', '-q', is_flag=True)
+    @click.option(
+        '--list', '-l', 'list_', is_flag=True,
+        help='Only list names of changed objects'
+    )
+    @pass_renderer
+    def cli(renderer, last_applied, show_deleted, quiet, list_):
+        '''Show differences between rendered manifests and running state.
 
-    By default, compare to last applied configuration. Note that in this mode,
-    differences introduced imperatively by eg. `kubectl scale` will be omitted.
-    '''
-    stdout = click.get_text_stream('stdout')
+        By default, compare to last applied configuration. Note that in this mode,
+        differences introduced imperatively by eg. `kubectl scale` will be omitted.
+        '''
+        stdout = click.get_text_stream('stdout')
 
-    rendered = [o for _, o in renderer.render(object_pairs_hook=dict)]
-    local = gather_objects(rendered)
-    try:
-        with ApiClient(renderer.env) as api:
-            if show_deleted:
-                cluster = api.list(last_applied=last_applied)
+        rendered = [o for _, o in renderer.render(object_pairs_hook=dict)]
+        local = gather_objects(rendered)
+        try:
+            with ApiClient(renderer.env) as api:
+                if show_deleted:
+                    cluster = api.list(last_applied=last_applied)
+                else:
+                    cluster = api.get_refs(rendered, last_applied)
+                cluster = gather_objects(cluster)
+        finally:
+            close_kernel()
+
+        found_changes = False
+        for action, args in calculate_changes(cluster, local):
+            found_changes = True
+            if quiet:
+                break
+            if list_:
+                print_name(action, args)
             else:
-                cluster = api.get_refs(rendered, last_applied)
-            cluster = gather_objects(cluster)
-    finally:
-        close_kernel()
+                print_change(action, args, local, cluster)
 
-    found_changes = False
-    for action, args in calculate_changes(cluster, local):
-        found_changes = True
-        if quiet:
-            break
-        if list_:
-            print_name(action, args)
-        else:
-            print_change(action, args, local, cluster)
+        sys.exit(int(found_changes))
 
-    sys.exit(int(found_changes))
+    return cli

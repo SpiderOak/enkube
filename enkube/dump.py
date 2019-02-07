@@ -19,13 +19,16 @@ from .api import ApiClient
 from .main import pass_env
 
 
-@click.command()
-@pass_env
-def cli(env):
-    '''Dump all objects from Kubernetes server.'''
-    try:
-        with ApiClient(env) as api:
-            for obj in api.list():
-                click.echo(format_yaml(obj))
-    finally:
-        close_kernel()
+def cli():
+    @click.command()
+    @pass_env
+    def cli(env):
+        '''Dump all objects from Kubernetes server.'''
+        try:
+            with ApiClient(env) as api:
+                for obj in api.list():
+                    click.echo(format_yaml(obj))
+        finally:
+            close_kernel()
+
+    return cli

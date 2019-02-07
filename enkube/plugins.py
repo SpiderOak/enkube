@@ -51,7 +51,7 @@ class CommandPluginLoader(click.MultiCommand, PluginLoader):
         return self.list()
 
     def get_command(self, ctx, name):
-        return self.load(name)
+        return self.load(name)()
 
 
 class RenderPluginLoader(PluginLoader):

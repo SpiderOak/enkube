@@ -240,5 +240,3 @@ def cli():
         cli.params.extend(controller.params)
 
     return cli
-
-cli = cli()

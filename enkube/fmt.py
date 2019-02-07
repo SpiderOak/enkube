@@ -72,37 +72,40 @@ class Formatter:
         return self._communicate(['-'], s, outfile)
 
 
-@click.command(
-    context_settings={'ignore_unknown_options': True},
-    add_help_option=False
-)
-@click.argument('files', nargs=-1, type=click.Path(exists=True))
-@click.option('--inplace', '-i', is_flag=True)
-@click.option('--yaml', '-y', 'isyaml', is_flag=True)
-def cli(files, inplace, isyaml):
-    '''Format jsonnet files according to conventions.'''
-    if isyaml and inplace:
-        click.secho('--inplace not supported for yaml', fg='red', err=True)
-        sys.exit(1)
-    if not files:
-        files = ['-']
+def cli():
+    @click.command(
+        context_settings={'ignore_unknown_options': True},
+        add_help_option=False
+    )
+    @click.argument('files', nargs=-1, type=click.Path(exists=True))
+    @click.option('--inplace', '-i', is_flag=True)
+    @click.option('--yaml', '-y', 'isyaml', is_flag=True)
+    def cli(files, inplace, isyaml):
+        '''Format jsonnet files according to conventions.'''
+        if isyaml and inplace:
+            click.secho('--inplace not supported for yaml', fg='red', err=True)
+            sys.exit(1)
+        if not files:
+            files = ['-']
 
-    fmt = Formatter()
-    try:
-        for f in files:
-            if isyaml:
-                if f == '-':
-                    obj = load_yaml(click.get_text_stream('stdin'))
+        fmt = Formatter()
+        try:
+            for f in files:
+                if isyaml:
+                    if f == '-':
+                        obj = load_yaml(click.get_text_stream('stdin'))
+                    else:
+                        with open(f, 'r') as f:
+                            obj = load_yaml(f)
+                    fmt.format(
+                        json.dumps(obj, indent=2).encode('utf-8'),
+                        outfile=click.get_text_stream('stdout')
+                    )
                 else:
-                    with open(f, 'r') as f:
-                        obj = load_yaml(f)
-                fmt.format(
-                    json.dumps(obj, indent=2).encode('utf-8'),
-                    outfile=click.get_text_stream('stdout')
-                )
-            else:
-                fmt.format_path(f, inplace)
+                    fmt.format_path(f, inplace)
 
-    except JsonnetProcessError as err:
-        click.secho(err.message, fg='red', err=True)
-        sys.exit(err.returncode)
+        except JsonnetProcessError as err:
+            click.secho(err.message, fg='red', err=True)
+            sys.exit(err.returncode)
+
+    return cli

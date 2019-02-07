@@ -87,27 +87,30 @@ class GPG:
         return self._endecrypt_obj(self.decrypt, obj)
 
 
-@click.command()
-@click.argument('action', type=click.Choice(['encrypt', 'decrypt']))
-@click.option('--json', '-j', 'isjson', is_flag=True)
-@pass_env
-def cli(env, action, isjson):
-    '''En/decrypt secrets.'''
-    gpg = GPG(env)
+def cli():
+    @click.command()
+    @click.argument('action', type=click.Choice(['encrypt', 'decrypt']))
+    @click.option('--json', '-j', 'isjson', is_flag=True)
+    @pass_env
+    def cli(env, action, isjson):
+        '''En/decrypt secrets.'''
+        gpg = GPG(env)
 
-    if isjson:
-        op = getattr(gpg, '{}_object'.format(action))
-        obj = load_yaml(sys.stdin)
-    else:
-        op = getattr(gpg, action)
-        obj = click.get_binary_stream('stdin')
+        if isjson:
+            op = getattr(gpg, '{}_object'.format(action))
+            obj = load_yaml(sys.stdin)
+        else:
+            op = getattr(gpg, action)
+            obj = click.get_binary_stream('stdin')
 
-    try:
-        obj = op(obj)
-    except GPGError as err:
-        click.secho(err.message, fg='red', err=True)
-        sys.exit(getattr(err, 'returncode', 1))
+        try:
+            obj = op(obj)
+        except GPGError as err:
+            click.secho(err.message, fg='red', err=True)
+            sys.exit(getattr(err, 'returncode', 1))
 
-    if isjson:
-        formatted = format_json(obj, sort_keys=False)
-        click.echo(formatted, nl=False)
+        if isjson:
+            formatted = format_json(obj, sort_keys=False)
+            click.echo(formatted, nl=False)
+
+    return cli

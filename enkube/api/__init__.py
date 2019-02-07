@@ -39,28 +39,31 @@ def displayhook(value):
     __builtins__['_'] = value
 
 
-@click.command()
-@pass_env
-def cli(env):
-    '''Start a Python REPL with a Kubernetes API client object.'''
-    try:
-        import readline
-    except Exception:
-        pass
-    import code
+def cli():
+    @click.command()
+    @pass_env
+    def cli(env):
+        '''Start a Python REPL with a Kubernetes API client object.'''
+        try:
+            import readline
+        except Exception:
+            pass
+        import code
 
-    old_displayhook = sys.displayhook
-    sys.displayhook = displayhook
-    try:
-        with ApiClient(env) as api:
-            context = {
-                'api': api,
-                'Watcher': Watcher,
-                'Watch': Watch,
-                'Cache': Cache,
-            }
-            shell = code.InteractiveConsole(context)
-            shell.interact()
-    finally:
-        sys.displayhook = old_displayhook
-        close_kernel()
+        old_displayhook = sys.displayhook
+        sys.displayhook = displayhook
+        try:
+            with ApiClient(env) as api:
+                context = {
+                    'api': api,
+                    'Watcher': Watcher,
+                    'Watch': Watch,
+                    'Cache': Cache,
+                }
+                shell = code.InteractiveConsole(context)
+                shell.interact()
+        finally:
+            sys.displayhook = old_displayhook
+            close_kernel()
+
+    return cli

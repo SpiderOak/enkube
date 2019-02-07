@@ -186,12 +186,15 @@ def pass_renderer(callback):
     return update_wrapper(inner, callback)
 
 
-@click.command()
-@pass_renderer
-def cli(renderer):
-    '''Render Kubernetes manifests.'''
-    stdout = click.get_text_stream('stdout')
-    try:
-        renderer.render_to_stream(stdout)
-    except RuntimeError as e:
-        raise RenderError(e.args[0])
+def cli():
+    @click.command()
+    @pass_renderer
+    def cli(renderer):
+        '''Render Kubernetes manifests.'''
+        stdout = click.get_text_stream('stdout')
+        try:
+            renderer.render_to_stream(stdout)
+        except RuntimeError as e:
+            raise RenderError(e.args[0])
+
+    return cli

@@ -22,30 +22,33 @@ from .api import ApiClient
 from .main import pass_env
 
 
-@click.command(
-    context_settings={'ignore_unknown_options': True},
-    add_help_option=False
-)
-@click.option('-l', 'labels', multiple=True)
-@click.option('-n', 'namespace', required=True)
-@click.argument('args', nargs=-1, type=click.UNPROCESSED)
-@pass_env
-def cli(env, namespace, labels, args):
-    '''Convenience wrapper for kubectl exec.'''
-    try:
-        with ApiClient(env) as api:
-            for pod in api.list(
-                'v1', 'Pod', namespace, labelSelector=','.join(labels)
-            ):
-                if pod['status']['phase'] == 'Running':
-                    podname = pod['metadata']['name']
-                    break
-            else:
-                click.secho('No running pods found', fg='red')
-                sys.exit(1)
-    finally:
-        close_kernel()
+def cli():
+    @click.command(
+        context_settings={'ignore_unknown_options': True},
+        add_help_option=False
+    )
+    @click.option('-l', 'labels', multiple=True)
+    @click.option('-n', 'namespace', required=True)
+    @click.argument('args', nargs=-1, type=click.UNPROCESSED)
+    @pass_env
+    def cli(env, namespace, labels, args):
+        '''Convenience wrapper for kubectl exec.'''
+        try:
+            with ApiClient(env) as api:
+                for pod in api.list(
+                    'v1', 'Pod', namespace, labelSelector=','.join(labels)
+                ):
+                    if pod['status']['phase'] == 'Running':
+                        podname = pod['metadata']['name']
+                        break
+                else:
+                    click.secho('No running pods found', fg='red')
+                    sys.exit(1)
+        finally:
+            close_kernel()
 
-    click.secho(f'Found pod {podname}', fg='cyan')
-    args = ['-n', namespace, 'exec', podname] + list(args)
-    kubectl_popen(env, args).wait()
+        click.secho(f'Found pod {podname}', fg='cyan')
+        args = ['-n', namespace, 'exec', podname] + list(args)
+        kubectl_popen(env, args).wait()
+
+    return cli
