@@ -30,7 +30,7 @@ Kubernetes object prototypes
     },
     name(name):: self + { metadata+: { name: name } },
     ns(ns):: self + { metadata+: { namespace: ns } },
-    labels(labels):: self + { metadata+: { labels: labels } },
+    labels(labels):: self + { metadata+: { labels+: labels } },
     ref:: {
       apiVersion: s.apiVersion,
       kind: s.kind,
@@ -471,6 +471,85 @@ Kubernetes object prototypes
   */
   StorageClass(name):: $._Object("storage.k8s.io/v1", "StorageClass", name) + $.ClusterScoped,
 
+
+  /*
+    PersistentVolume
+
+    Required arguments:
+      name: The name of the PersistentVolume
+      capacity: Capacity of the PersistentVolume
+
+    Optional arguments:
+
+      accessModes: List of access modes available.  Defaults to ["ReadWriteOnce"].
+      persistentVolumeReclaimPolicy: Policy for when the PV is reclaimed.  Defaults to "Retain".
+
+  */
+
+  PersistentVolume(name, capacity, accessModes=null, persistentVolumeReclaimPolicy=null)::
+    $._Object("v1", "PersistentVolume", name).labels({ name: name }) + $.ClusterScoped + {
+      spec: {
+        capacity: {
+          storage: capacity,
+        },
+        volumeMode: "Filesystem",
+        accessModes: if accessModes == null then ["ReadWriteOnce"] else accessModes,
+        persistentVolumeReclaimPolicy: if persistentVolumeReclaimPolicy == null then "Retain" else persistentVolumeReclaimPolicy,
+      },
+
+      StorageClass(storageClassName):: self + {
+        spec+: { storageClassName: storageClassName, },
+      },
+
+      MountOptions(mountOptions):: self + {
+        spec+: { mountOptions: mountOptions, },
+      },
+
+      HostPath(node, path):: self + self.labels({ type: "local" }) + {
+        spec+: {
+          hostPath: { path: path },
+          nodeAffinity: { required: { nodeSelectorTerms: [{ matchExpressions: [
+            { key: "kubernetes.io/hostname", operator: "In", values: [node] },
+          ] }] } },
+        },
+      },
+
+      Nfs(server, path):: self + self.labels({ type: "nfs" }) + {
+        spec+: { nfs: { server: server, path: path, } },
+      },
+      // TODO: Add more types than HostPath and NFS
+    },
+
+  /*
+    PersistentVolumeClaim
+
+    Required arguments:
+      name: The name of the PersistentVolumeClaim
+      storageRequest: Requested storage amount
+
+    Optional arguments:
+
+      accessModes: List of access modes available.  Defaults to ["ReadWriteOnce"].
+
+  */
+
+
+  PersistentVolumeClaim(name, storageRequest, accessModes=null)::
+    $._Object("v1", "PersistentVolumeClaim", name) {
+      spec: {
+        resources: { requests: { storage: storageRequest } },
+        accessModes: if accessModes == null then ["ReadWriteOnce"] else accessModes,
+      },
+
+      StorageClass(storageClassName):: self + {
+        spec+: { storageClassName: storageClassName, },
+      },
+
+      Selector(selector):: self + {
+        spec+: { selector: selector }
+      },
+    },
+
   /*
     Local StorageClass
   */
@@ -492,17 +571,9 @@ Kubernetes object prototypes
       accessModes: A list of access modes. Defaults to ReadWriteOnce.
   */
   LocalPersistentVolume(name, node, path, capacity, accessModes=null)::
-    $._Object("v1", "PersistentVolume", name).labels({ name: name, type: "local" }) + $.ClusterScoped + {
-      spec: {
-        storageClassName: "local-storage",
-        capacity: { storage: capacity },
-        accessModes: if accessModes == null then ["ReadWriteOnce"] else accessModes,
-        hostPath: { path: path },
-        nodeAffinity: { required: { nodeSelectorTerms: [{ matchExpressions: [
-          { key: "kubernetes.io/hostname", operator: "In", values: [node] },
-        ] }] } },
-      },
-    },
+    $.PersistentVolume(name, capacity, accessModes)
+    .HostPath(node, path)
+    .StorageClass("local-storage"),
 
   /*
     Local PersistentVolumeClaim
@@ -515,14 +586,9 @@ Kubernetes object prototypes
       accessModes: A list of access modes. Defaults to ReadWriteOnce.
   */
   LocalPersistentVolumeClaim(name, storageRequest, accessModes=null)::
-    $._Object("v1", "PersistentVolumeClaim", name) {
-      spec: {
-        storageClassName: "local-storage",
-        resources: { requests: { storage: storageRequest } },
-        accessModes: if accessModes == null then ["ReadWriteOnce"] else accessModes,
-        selector: { matchLabels: { type: "local", name: name } },
-      },
-    },
+    $.PersistentVolumeClaim(name, storageRequest, accessModes)
+    .StorageClass("local-storage")
+    .Selector({ matchLabels: { type: "local", name: name } }),
 
   /*
     Secret
