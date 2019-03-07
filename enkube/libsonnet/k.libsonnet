@@ -599,10 +599,12 @@ Kubernetes object prototypes
 
     Optional arguments:
       type: The type of secret. Default is "Opaque".
+      encoded: Whether or not the passed data items are already base64-encoded.
+        If this is false, items will be encoded automatically. Default false.
   */
-  Secret(name, data, type="Opaque"):: $._Object("v1", "Secret", name) {
+  Secret(name, data, type="Opaque", encoded=false):: $._Object("v1", "Secret", name) {
     type: type,
-    data: { [k]: std.base64(data[k]) for k in std.objectFields(data) },
+    data: if encoded then data else { [k]: std.base64(data[k]) for k in std.objectFields(data) },
   },
 
   /*

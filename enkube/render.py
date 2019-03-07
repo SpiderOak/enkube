@@ -61,29 +61,8 @@ def load_native_callbacks(env):
     return callbacks
 
 
-class Renderer:
-    def __init__(self, env, files=(), exclude=(), verify_namespace=True):
-        self.env = env
-        self.native_callbacks = load_native_callbacks(self.env)
-        self.files = list(files)
-        self.exclude = list(exclude)
-        self.verify_namespace = verify_namespace
-
-        if not self.files:
-            self.files = [click.Path(exists=True)('manifests')]
-
-    def render_to_stream(self, stream):
-        for fname, obj in self.render():
-            click.secho('---\n# File: {}'.format(fname), file=stream, fg='blue')
-            pyaml.dump(obj, stream, safe=True)
-
-    def render(self, object_pairs_hook=OrderedDict):
-        for f in self.find_files(self.files, True):
-            with f:
-                s = f.read()
-            obj = self.render_jsonnet(
-                f.name, s, object_pairs_hook=object_pairs_hook)
-            yield f.name, obj
+class BaseRenderer:
+    verify_namespace = True
 
     def render_jsonnet(self, name, s, object_pairs_hook=OrderedDict):
         s = _jsonnet.evaluate_snippet(
@@ -95,6 +74,60 @@ class Renderer:
             }
         )
         return json.loads(s, object_pairs_hook=object_pairs_hook)
+
+    def import_callback(self, dirname, rel):
+        if rel == 'enkube/regex':
+            return rel, self._regex_obj()
+
+        elif rel.startswith('enkube/'):
+            if not rel.endswith('.libsonnet'):
+                rel += '.libsonnet'
+            try:
+                res = pkg_resources.resource_string(
+                    __name__, os.path.join('libsonnet', rel.split('/', 1)[1])
+                ).decode('utf-8')
+                return rel, res
+            except Exception:
+                pass
+
+        if URL_RX.match(rel):
+            try:
+                res = requests.get(rel)
+                return rel, res.text
+            except Exception:
+                raise RuntimeError('error retrieving URL')
+
+        raise RuntimeError('file not found')
+
+    def _regex_obj(self):
+        return '''{
+            capture(regex, str):: std.native("regex/capture")(regex, str)
+        }'''
+
+
+class Renderer(BaseRenderer):
+    def __init__(self, env, files=(), exclude=(), verify_namespace=True):
+        self.env = env
+        self.native_callbacks = load_native_callbacks(self.env)
+        self.files = list(files)
+        self.exclude = list(exclude)
+        self.verify_namespace = verify_namespace
+
+        if not self.files:
+            self.files = [click.Path(exists=True)('manifests')]
+
+    def render(self, object_pairs_hook=OrderedDict):
+        for f in self.find_files(self.files, True):
+            with f:
+                s = f.read()
+            obj = self.render_jsonnet(
+                f.name, s, object_pairs_hook=object_pairs_hook)
+            yield f.name, obj
+
+    def render_to_stream(self, stream):
+        for fname, obj in self.render():
+            click.secho('---\n# File: {}'.format(fname), file=stream, fg='blue')
+            pyaml.dump(obj, stream, safe=True)
 
     def find_files(self, paths, explicit=False):
         for p in paths:
@@ -116,30 +149,15 @@ class Renderer:
         if rel == 'enkube/env':
             return rel, self.env.to_json()
 
-        elif rel == 'enkube/regex':
-            return rel, self._regex_obj()
-
         elif rel.startswith('enkube/render/'):
             name = rel.split('/', 1)[1]
             return rel, self._renderer_obj(name)
 
-        elif rel.startswith('enkube/'):
-            if not rel.endswith('.libsonnet'):
-                rel += '.libsonnet'
-            try:
-                res = pkg_resources.resource_string(
-                    __name__, os.path.join('libsonnet', rel.split('/', 1)[1])
-                ).decode('utf-8')
-                return rel, res
-            except Exception:
-                pass
-
-        if URL_RX.match(rel):
-            try:
-                res = requests.get(rel)
-                return rel, res.text
-            except Exception:
-                raise RuntimeError('error retrieving URL')
+        try:
+            return super(Renderer, self).import_callback(dirname, rel)
+        except RuntimeError as err:
+            if err.args[0] != 'file not found':
+                raise
 
         for d in self.env.search_dirs(
             [dirname], [os.path.join(dirname, 'defaults')]
@@ -150,12 +168,8 @@ class Renderer:
                     return path, f.read()
             except FileNotFoundError:
                 continue
-        raise RuntimeError('file not found')
 
-    def _regex_obj(self):
-        return '''{
-            capture(regex, str):: std.native("regex/capture")(regex, str)
-        }'''
+        raise RuntimeError('file not found')
 
     def _renderer_obj(self, name):
         return '''{{
