@@ -44,25 +44,27 @@ def _regex_capture(rx, s):
     return {}
 
 
-def load_native_callbacks(env):
+def load_native_callbacks(env=None):
     callbacks = {
         'regex/capture': (('regex', 'str'), _regex_capture),
     }
-    for name in env.render_plugin_loader.list():
-        renderer = env.load_renderer(name)
-        callbacks['render/{}.render'.format(name)] = (
-            ('template', 'context'),
-            _json_context_wrapper(renderer.render)
-        )
-        callbacks['render/{}.render_string'.format(name)] = (
-            ('template_string', 'context'),
-            _json_context_wrapper(renderer.render_string)
-        )
+    if env:
+        for name in env.render_plugin_loader.list():
+            renderer = env.load_renderer(name)
+            callbacks['render/{}.render'.format(name)] = (
+                ('template', 'context'),
+                _json_context_wrapper(renderer.render)
+            )
+            callbacks['render/{}.render_string'.format(name)] = (
+                ('template_string', 'context'),
+                _json_context_wrapper(renderer.render_string)
+            )
     return callbacks
 
 
 class BaseRenderer:
     verify_namespace = True
+    native_callbacks = load_native_callbacks()
 
     def render_jsonnet(self, name, s, object_pairs_hook=OrderedDict):
         s = _jsonnet.evaluate_snippet(
