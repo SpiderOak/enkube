@@ -90,6 +90,10 @@ class Controller(metaclass=ControllerType):
             if err.resp.status_code != 409:
                 raise
 
+    async def ensure_crds(self):
+        for crd in self.crds.values():
+            await self.ensure_object(crd)
+
 
 class ControllerManager(SyncContextManager):
     log = LOG.getChild('ControllerManager')
@@ -119,6 +123,11 @@ class ControllerManager(SyncContextManager):
         self.controllers.add(c)
 
         if self._taskgroup:
+            try:
+                await c.ensure_crds()
+            except Exception:
+                self.log.exception('unhandled error creating crds')
+
             if new_cache:
                 self.log.debug('starting cache')
                 cache._controller_run_task = await self._taskgroup.spawn(
@@ -126,7 +135,7 @@ class ControllerManager(SyncContextManager):
             else:
                 self.log.debug('resyncing cache')
                 await cache.resync()
-            await self._taskgroup.spawn(self._run_controller_method, c)
+            await self._taskgroup.spawn(self._run_controller_method, c, 'run')
 
         return c
 
@@ -163,11 +172,16 @@ class ControllerManager(SyncContextManager):
             async with self._taskgroup:
                 if watch_signals:
                     await self._taskgroup.spawn(self._watch_signals)
+                for c in self.controllers:
+                    try:
+                        await c.ensure_crds()
+                    except Exception:
+                        self.log.exception('unhandled error creating crds')
                 for api, cache, refs in self.envs.values():
                     cache._controller_run_task = await self._taskgroup.spawn(
                         self._run_cache, cache)
                 for c in self.controllers:
-                    await self._taskgroup.spawn(self._run_controller_method, c)
+                    await self._taskgroup.spawn(self._run_controller_method, c, 'run')
 
         finally:
             async with curio.TaskGroup() as g:
@@ -183,7 +197,7 @@ class ControllerManager(SyncContextManager):
         except Exception:
             self.log.exception('unhandled error in cache run method')
 
-    async def _run_controller_method(self, c, name='run'):
+    async def _run_controller_method(self, c, name):
         method = getattr(c, name, None)
         if not method:
             return

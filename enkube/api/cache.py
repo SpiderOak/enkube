@@ -21,6 +21,7 @@ import curio
 
 from ..util import sync_wrap
 from .watcher import Watcher
+from .client import ResourceKindNotFoundError, ResourceNotFoundError
 
 
 LOG = logging.getLogger(__name__)
@@ -64,8 +65,16 @@ class Cache(dict):
         seen = set()
         for k, kw in self.kinds:
             if isinstance(k, str):
-                k = await self.api.getKind(*k.rsplit('/', 1))
-            l = await self.api.get(k._makeLink(**dict(kw)))
+                try:
+                    k = await self.api.getKind(*k.rsplit('/', 1))
+                except ResourceKindNotFoundError:
+                    self.log.warning(f'ignoring unknown kind: {k}')
+                    continue
+            try:
+                l = await self.api.get(k._makeLink(**dict(kw)))
+            except ResourceNotFoundError:
+                self.log.warning(f'ignoring unknown kind: {k.apiVersion}/{k.kind}')
+                continue
             versions[k] = l.metadata.resourceVersion
             for obj in l['items']:
                 path = obj._selfLink()
@@ -86,8 +95,14 @@ class Cache(dict):
         async with self.watcher_factory(self.api) as watcher:
             for k, kw in self.kinds:
                 if isinstance(k, str):
-                    k = await self.api.getKind(*k.rsplit('/', 1))
-                kw = dict(kw, resourceVersion=versions[k])
+                    try:
+                        k = await self.api.getKind(*k.rsplit('/', 1))
+                    except ResourceKindNotFoundError:
+                        continue
+                try:
+                    kw = dict(kw, resourceVersion=versions[k])
+                except KeyError:
+                    continue
                 await k._watch(watcher, **kw)
 
             while True:

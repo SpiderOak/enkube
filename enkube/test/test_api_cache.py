@@ -21,6 +21,7 @@ import curio
 from .util import AsyncTestCase, apatch, dummy_coro
 
 from enkube.api.types import *
+from enkube.api.client import ResourceNotFoundError, ResourceKindNotFoundError
 from enkube.api import cache
 
 
@@ -85,6 +86,7 @@ class TestCache(AsyncTestCase):
         })
         self.watcher = FakeWatcher(self.events)
         self.cache = cache.Cache(self.api, [(FooKind, {})], lambda api: self.watcher)
+        self.cache.log = MagicMock()
 
     def assertWatchCallsEqual(self, calls, msg=None):
         for call, expected in zip_longest(self.watcher.watch.call_args_list, calls):
@@ -121,6 +123,14 @@ class TestCache(AsyncTestCase):
         self.api.get.assert_called_once_with(FooKind._makeLink())
         self.assertFalse(self.api.getKind.called)
 
+    async def test_ignores_missing_kinds(self):
+        async def not_found(*args):
+            raise ResourceNotFoundError()
+        self.api.get.side_effect = not_found
+        await self.cache.run()
+        self.cache.log.warning.assert_called_once_with(
+            'ignoring unknown kind: enkube.local/v1/FooKind')
+
     async def test_handles_string_kinds_on_list(self):
         self.cache.kinds = {('enkube.local/v1/FooKind', frozenset())}
         objs = [
@@ -132,6 +142,15 @@ class TestCache(AsyncTestCase):
         self.assertEqual(self.cache, state)
         self.api.get.assert_called_once_with(FooKind._makeLink())
         self.api.getKind.assert_called_with('enkube.local/v1', 'FooKind')
+
+    async def test_ignores_missing_string_kinds(self):
+        async def not_found(*args):
+            raise ResourceKindNotFoundError()
+        self.cache.kinds = {('enkube.local/v1/FooKind', frozenset())}
+        self.api.getKind.side_effect = not_found
+        await self.cache.run()
+        self.cache.log.warning.assert_called_once_with(
+            'ignoring unknown kind: enkube.local/v1/FooKind')
 
     async def test_caches_objects_from_events(self):
         objs = [
@@ -467,9 +486,8 @@ class TestCache(AsyncTestCase):
         receiver2 = MagicMock(side_effect=dummy_coro)
         self.cache.subscribe(lambda evt, obj: True, receiver1)
         self.cache.subscribe(lambda evt, obj: True, receiver2)
-        with patch.object(self.cache, 'log') as log:
-            await self.cache.run()
-        log.exception.assert_called_once_with('unhandled error in subscription handler')
+        await self.cache.run()
+        self.cache.log.exception.assert_called_once_with('unhandled error in subscription handler')
         self.assertTrue(receiver2.called)
 
     async def test_subscription_cond_exception_logs_traceback(self):
@@ -481,9 +499,8 @@ class TestCache(AsyncTestCase):
         receiver2 = MagicMock(side_effect=dummy_coro)
         self.cache.subscribe(cond1, receiver1)
         self.cache.subscribe(cond2, receiver2)
-        with patch.object(self.cache, 'log') as log:
-            await self.cache.run()
-        log.exception.assert_called_once_with('unhandled error in subscription handler')
+        await self.cache.run()
+        self.cache.log.exception.assert_called_once_with('unhandled error in subscription handler')
         self.assertFalse(receiver1.called)
         self.assertTrue(receiver2.called)
 
@@ -506,9 +523,8 @@ class TestCache(AsyncTestCase):
         def pop(idx):
             raise exceptions.pop(0)
         self.watcher.events = MagicMock(**{'pop.side_effect': pop})
-        with patch.object(self.cache, 'log') as log:
-            await self.cache.run()
-        log.warning.assert_called_once_with(
+        await self.cache.run()
+        self.cache.log.warning.assert_called_once_with(
             'watch iteration resulted in error: RuntimeError()')
 
     async def test_get_or_update_is_deprected(self):

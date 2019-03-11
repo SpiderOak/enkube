@@ -174,6 +174,14 @@ class TestController(AsyncTestCase):
             await c.ensure_object(sentinel.obj)
         api.create.assert_called_once_with(sentinel.obj)
 
+    async def test_ensure_crds(self):
+        c = controller.Controller(sentinel.mgr, sentinel.env, sentinel.api, MagicMock())
+        c.ensure_object = MagicMock(side_effect=dummy_coro)
+        crds = [MagicMock(), MagicMock()]
+        c.crds = dict((crd._selfLink.return_value, crd) for crd in crds)
+        await c.ensure_crds()
+        c.ensure_object.assert_has_calls([call(crd) for crd in crds])
+
     async def test_spawn_and_close(self):
         expected_args = [((sentinel.arg1, sentinel.arg2), {})]
         call_args = []
@@ -194,6 +202,7 @@ def mock_controller_cls(run_coro=dummy_coro, close_coro=dummy_coro):
         'mgr': mgr, 'env': env, 'api': api, 'cache': cache,
         'run.side_effect': run_coro,
         'close.side_effect': close_coro,
+        'ensure_crds.side_effect': dummy_coro,
     }, **kw)))
 
 
@@ -236,6 +245,7 @@ class TestControllerManager(AsyncTestCase):
         self.assertIs(c.env, sentinel.env)
         cls.assert_called_once_with(self.mgr, sentinel.env, self.api, self.cache, **kw)
         self.assertEqual(self.mgr.envs[sentinel.env][2], 2)
+        c.ensure_crds.assert_not_called()
 
     async def test_spawn_controller_creates_api_and_cache(self):
         new_api = mock_api_client_factory(sentinel.new_env)
@@ -314,11 +324,14 @@ class TestControllerManager(AsyncTestCase):
         await self.mgr.run()
         self.mgr._run_cache.assert_called_once_with(self.cache)
         self.assertEqual(self.cache._controller_run_task.name, 'dummy_coro')
+        c1.ensure_crds.assert_called_once_with()
+        c2.ensure_crds.assert_called_once_with()
         c1.run.assert_called_once_with()
         c2.run.assert_called_once_with()
         c1.close.assert_called_once_with()
         c2.close.assert_called_once_with()
-        self.mgr._run_controller_method.assert_has_calls([call(c1), call(c2)], any_order=True)
+        self.mgr._run_controller_method.assert_has_calls([
+            call(c1, 'run'), call(c2, 'run')], any_order=True)
         self.mgr.log.info.assert_has_calls([
             call('controller manager starting'),
             call('running MagicMock'),
@@ -386,10 +399,19 @@ class TestControllerManager(AsyncTestCase):
             self.c4 = await self.mgr.spawn_controller(mock_controller_cls(), sentinel.env3)
         c1 = await self.mgr.spawn_controller(mock_controller_cls(run_coro=run_coro), sentinel.env)
         c2 = await self.mgr.spawn_controller(mock_controller_cls(), sentinel.env2)
+
+        c1.ensure_crds.assert_not_called()
+        c2.ensure_crds.assert_not_called()
+
         await self.mgr.run()
 
+        c1.ensure_crds.assert_called_once_with()
+        c2.ensure_crds.assert_called_once_with()
+        self.c3.ensure_crds.assert_called_once_with()
+        self.c4.ensure_crds.assert_called_once_with()
+
         self.mgr._run_controller_method.assert_has_calls([
-            call(c1), call(c2), call(self.c3), call(self.c4)
+            call(c1, 'run'), call(c2, 'run'), call(self.c3, 'run'), call(self.c4, 'run')
         ], any_order=True)
         c1.run.assert_called_once_with()
         c2.run.assert_called_once_with()
@@ -441,7 +463,7 @@ class TestControllerManager(AsyncTestCase):
 
     async def test_run_controller_method(self):
         c = mock_controller_cls()(self.mgr, sentinel.env, sentinel.api, sentinel.cache)
-        await self.mgr._run_controller_method(c)
+        await self.mgr._run_controller_method(c, 'run')
         c.run.assert_called_once_with()
         self.mgr.log.debug.assert_not_called()
         self.mgr.log.info.assert_has_calls([
@@ -460,7 +482,7 @@ class TestControllerManager(AsyncTestCase):
 
     async def test_run_controller_method_does_nothing_if_method_doesnt_exist(self):
         await self.mgr._run_controller_method(
-            controller.Controller(self.mgr, sentinel.env, sentinel.api, sentinel.cache))
+            controller.Controller(self.mgr, sentinel.env, sentinel.api, sentinel.cache), 'run')
         self.mgr.log.debug.assert_not_called()
         self.mgr.log.info.assert_not_called()
         self.mgr.log.exception.assert_not_called()
@@ -472,7 +494,7 @@ class TestControllerManager(AsyncTestCase):
             raise FooError()
         c = mock_controller_cls(run_coro=run_coro)(
             self.mgr, sentinel.env, sentinel.api, sentinel.cache)
-        await self.mgr._run_controller_method(c)
+        await self.mgr._run_controller_method(c, 'run')
         self.mgr.log.info.assert_called_once_with('running MagicMock')
         self.mgr.log.exception.assert_called_once_with(
             'unhandled error in controller run method')
@@ -483,7 +505,7 @@ class TestControllerManager(AsyncTestCase):
         c = mock_controller_cls(run_coro=run_coro)(
             self.mgr, sentinel.env, sentinel.api, sentinel.cache)
         with self.assertRaises(curio.CancelledError):
-            await self.mgr._run_controller_method(c)
+            await self.mgr._run_controller_method(c, 'run')
         self.mgr.log.info.assert_has_calls([
             call('running MagicMock'),
             call('MagicMock.run cancelled'),
