@@ -232,7 +232,12 @@ class ApiClient(SyncContextManager):
         if not (200 <= resp.status_code < 300):
             if resp.status_code == 404:
                 raise ResourceNotFoundError(resp)
-            raise ApiError(resp)
+            if resp.headers.get('content-type', '').split(';', 1)[0] == 'application/json':
+                j = resp.json()
+                reason = j.get('message')
+            else:
+                reason = None
+            raise ApiError(resp, reason)
         if kw.get('stream'):
             return StreamIter(self, resp)
         if resp.headers.get('content-type', '').split(';', 1)[0] == 'application/json':

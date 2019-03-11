@@ -430,6 +430,19 @@ class TestApiClient(AsyncTestCase):
         self.assertIs(err.exception.resp, resp)
 
     @apatch('enkube.api.client.ApiClient._ensure_session')
+    async def test_request_non_2xx_raises_apierror_with_reason(self, es):
+        es.side_effect = dummy_coro
+        resp = MagicMock(status_code=500, headers={'content-type': 'application/json'})
+        resp.json.return_value = {'message': sentinel.reason}
+        async def req_coro(*args, **kw):
+            return resp
+        self.api.session = MagicMock(**{'request.side_effect': req_coro})
+        with self.assertRaises(client.ApiError) as err:
+            await self.api.request('GET', '/', foo='bar')
+        self.assertIs(err.exception.resp, resp)
+        self.assertIs(err.exception.reason, sentinel.reason)
+
+    @apatch('enkube.api.client.ApiClient._ensure_session')
     async def test_request_resource_not_found(self, es):
         es.side_effect = dummy_coro
         resp = MagicMock(status_code=404)
