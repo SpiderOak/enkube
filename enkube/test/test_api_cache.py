@@ -123,6 +123,14 @@ class TestCache(AsyncTestCase):
         self.api.get.assert_called_once_with(FooKind._makeLink())
         self.assertFalse(self.api.getKind.called)
 
+    async def test_ignores_objects_without_selflink_from_list(self):
+        objs = [
+            {'foo': 'bar'},
+        ]
+        self.list.extend(objs)
+        await self.cache.run()
+        self.assertEqual(self.cache, {})
+
     async def test_ignores_missing_kinds(self):
         async def not_found(*args):
             raise ResourceNotFoundError()
@@ -163,6 +171,14 @@ class TestCache(AsyncTestCase):
         await self.cache.run()
         self.assertEqual(self.cache, state)
         self.assertFalse(self.api.getKind.called)
+
+    async def test_ignores_objects_without_selflink_from_events(self):
+        objs = [
+            {'foo': 'bar'},
+        ]
+        self.events.extend(('ADDED', obj) for obj in objs)
+        await self.cache.run()
+        self.assertEqual(self.cache, {})
 
     async def test_handles_string_kinds_on_watch(self):
         self.cache.kinds = {('enkube.local/v1/FooKind', frozenset())}

@@ -77,7 +77,10 @@ class Cache(dict):
                 continue
             versions[k] = l.metadata.resourceVersion
             for obj in l['items']:
-                path = obj._selfLink()
+                try:
+                    path = obj._selfLink()
+                except AttributeError:
+                    continue
                 seen.add(path)
                 old = self.get(path)
                 self[path] = obj
@@ -115,7 +118,10 @@ class Cache(dict):
                 except Exception as err:
                     self.log.warning(f'watch iteration resulted in error: {err!r}')
                     continue
-                path = obj._selfLink()
+                try:
+                    path = obj._selfLink()
+                except AttributeError:
+                    continue
                 if event == 'DELETED':
                     old = obj
                     new = None
