@@ -126,12 +126,14 @@ class Environment:
 
 class TempEnvironment(Environment):
     def __init__(self, kubeconfig=None):
+        if isinstance(kubeconfig, bytes):
+            kubeconfig = kubeconfig.decode('ascii')
         self.kubeconfig = kubeconfig
         self.tempdir = tempfile.TemporaryDirectory()
         super(TempEnvironment, self).__init__()
         if kubeconfig:
             with open(os.path.join(self.envdir, '.kubeconfig'), 'wb') as f:
-                f.write(kubeconfig)
+                f.write(kubeconfig.encode('ascii'))
 
     def _find_envdir(self):
         return self.tempdir.name
