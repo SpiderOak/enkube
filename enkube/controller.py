@@ -81,18 +81,24 @@ class Controller(metaclass=ControllerType):
         return event == 'DELETED' and obj._selfLink() in self.crds
 
     async def _crd_event(self, cache, event, old, new):
-        await self.ensure_object(self.crds[old._selfLink()])
+        await self.api.ensure_object(self.crds[old._selfLink()])
 
     async def ensure_object(self, obj):
         try:
-            await self.api.create(obj)
-        except ApiError as err:
-            if err.resp.status_code != 409:
-                raise
+            path = obj._selfLink()
+        except AttributeError:
+            pass
+        else:
+            if path in self.cache:
+                return
+        await self.api.ensure_object(obj)
+
+    async def ensure_objects(self, objs):
+        for obj in objs:
+            await self.ensure_object(obj)
 
     async def ensure_crds(self):
-        for crd in self.crds.values():
-            await self.ensure_object(crd)
+        await self.ensure_objects(self.crds.values())
 
 
 class ControllerManager(SyncContextManager):

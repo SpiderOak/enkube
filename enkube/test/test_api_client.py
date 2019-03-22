@@ -16,7 +16,7 @@ import os
 import json
 import logging
 import unittest
-from unittest.mock import patch, MagicMock, sentinel
+from unittest.mock import patch, MagicMock, sentinel, call
 
 import curio
 from curio import subprocess
@@ -718,6 +718,33 @@ class TestApiClient(AsyncTestCase):
         self.assertEqual(responses, [])
         sleep.assert_called_once_with(client.ApiClient._health_check_interval)
         self.assertTrue(self.api.healthy.is_set())
+
+    async def test_ensure_object(self):
+        self.api.create = MagicMock(side_effect=dummy_coro)
+        await self.api.ensure_object(sentinel.obj)
+        self.api.create.assert_called_once_with(sentinel.obj)
+
+    async def test_ensure_object_ignores_conflict(self):
+        async def conflict_coro(*args, **kw):
+            raise client.ApiError(MagicMock(status_code=409))
+        self.api.create = MagicMock(side_effect=conflict_coro)
+        await self.api.ensure_object(sentinel.obj)
+        self.api.create.assert_called_once_with(sentinel.obj)
+
+    async def test_ensure_object_raises_non_conflict_errors(self):
+        async def conflict_coro(*args, **kw):
+            raise client.ApiError(MagicMock(status_code=500))
+        self.api.create = MagicMock(side_effect=conflict_coro)
+        with self.assertRaises(client.ApiError):
+            await self.api.ensure_object(sentinel.obj)
+
+    async def test_ensure_objects(self):
+        self.api.ensure_object = MagicMock(side_effect=dummy_coro)
+        await self.api.ensure_objects([sentinel.obj1, sentinel.obj2])
+        self.api.ensure_object.assert_has_calls([
+            call(sentinel.obj1),
+            call(sentinel.obj2),
+        ])
 
 
 if __name__ == '__main__':

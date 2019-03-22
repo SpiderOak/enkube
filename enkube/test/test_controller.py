@@ -144,35 +144,35 @@ class TestController(AsyncTestCase):
         self.assertFalse(c._crd_filter('DELETED', MagicMock(**{'_selfLink.return_value': 3})))
 
     async def test_crd_event(self):
-        c = controller.Controller(sentinel.mgr, sentinel.env, sentinel.api, MagicMock())
-        c.ensure_object = MagicMock(side_effect=dummy_coro)
+        api = MagicMock(**{'ensure_object.side_effect': dummy_coro})
+        c = controller.Controller(sentinel.mgr, sentinel.env, api, MagicMock())
         crd = MagicMock()
         c.crds = {crd._selfLink.return_value: crd}
         await c._crd_event(c.cache, 'DELETED', crd, None)
-        c.ensure_object.assert_called_once_with(crd)
+        api.ensure_object.assert_called_once_with(crd)
 
     async def test_ensure_object(self):
-        api = MagicMock(**{'create.side_effect': dummy_coro})
+        api = MagicMock(**{'ensure_object.side_effect': dummy_coro})
         c = controller.Controller(sentinel.mgr, sentinel.env, api, MagicMock())
         await c.ensure_object(sentinel.obj)
-        api.create.assert_called_once_with(sentinel.obj)
+        api.ensure_object.assert_called_once_with(sentinel.obj)
 
-    async def test_ensure_object_ignores_conflict(self):
-        async def conflict_coro(*args, **kw):
-            raise ApiError(MagicMock(status_code=409))
-        api = MagicMock(**{'create.side_effect': conflict_coro})
-        c = controller.Controller(sentinel.mgr, sentinel.env, api, MagicMock())
-        await c.ensure_object(sentinel.obj)
-        api.create.assert_called_once_with(sentinel.obj)
+    async def test_ensure_object_skips_cached_objects(self):
+        api = MagicMock(**{'ensure_object.side_effect': dummy_coro})
+        obj = MagicMock()
+        cache = {obj._selfLink.return_value: obj}
+        c = controller.Controller(sentinel.mgr, sentinel.env, api, cache)
+        await c.ensure_object(obj)
+        api.ensure_object.assert_not_called()
 
-    async def test_ensure_object_raises_non_conflict_errors(self):
-        async def conflict_coro(*args, **kw):
-            raise ApiError(MagicMock(status_code=500))
-        api = MagicMock(**{'create.side_effect': conflict_coro})
-        c = controller.Controller(sentinel.mgr, sentinel.env, api, MagicMock())
-        with self.assertRaises(ApiError):
-            await c.ensure_object(sentinel.obj)
-        api.create.assert_called_once_with(sentinel.obj)
+    async def test_ensure_objects(self):
+        c = controller.Controller(sentinel.mgr, sentinel.env, sentinel.api, MagicMock())
+        c.ensure_object = MagicMock(side_effect=dummy_coro)
+        await c.ensure_objects([sentinel.obj1, sentinel.obj2])
+        c.ensure_object.assert_has_calls([
+            call(sentinel.obj1),
+            call(sentinel.obj2),
+        ])
 
     async def test_ensure_crds(self):
         c = controller.Controller(sentinel.mgr, sentinel.env, sentinel.api, MagicMock())
@@ -180,7 +180,7 @@ class TestController(AsyncTestCase):
         crds = [MagicMock(), MagicMock()]
         c.crds = dict((crd._selfLink.return_value, crd) for crd in crds)
         await c.ensure_crds()
-        c.ensure_object.assert_has_calls([call(crd) for crd in crds])
+        c.ensure_object.assert_has_calls([call(crd) for crd in crds], any_order=True)
 
     async def test_spawn_and_close(self):
         expected_args = [((sentinel.arg1, sentinel.arg2), {})]

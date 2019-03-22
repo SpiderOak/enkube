@@ -394,6 +394,19 @@ class ApiClient(SyncContextManager):
         return await self.post(path, json=obj)
 
     @sync_wrap
+    async def ensure_object(self, obj):
+        try:
+            await self.create(obj)
+        except ApiError as err:
+            if err.resp.status_code != 409:
+                raise
+
+    @sync_wrap
+    async def ensure_objects(self, objs):
+        for obj in objs:
+            await self.ensure_object(obj)
+
+    @sync_wrap
     async def replace(self, obj):
         if not isinstance(obj, Kind):
             obj = await self._kindify(obj)
