@@ -184,6 +184,7 @@ class ControllerManager(SyncContextManager):
                     except Exception:
                         self.log.exception('unhandled error creating crds')
                 for api, cache, refs in self.envs.values():
+                    self.log.debug('starting cache')
                     cache._controller_run_task = await self._taskgroup.spawn(
                         self._run_cache, cache)
                 for c in self.controllers:
