@@ -24,6 +24,7 @@ from .plugins import PluginLoader
 from .api.types import CustomResourceDefinition
 from .api.client import ApiClient, ApiError
 from .api.cache import Cache
+from .api.cache_synchronizer import CacheSynchronizer
 from .main import pass_env
 
 LOG = logging.getLogger(__name__)
@@ -52,33 +53,62 @@ class ControllerType(type):
 
 
 class Controller(metaclass=ControllerType):
+    cache_synchronizer_factory = CacheSynchronizer
     params = ()
     crds = ()
     kinds = ()
 
     def __init__(self, mgr, env, api, cache, **kw):
-        self._taskgroup = curio.TaskGroup()
+        self._taskgroup = None
+        self._run_task = None
+        self.running = curio.Event()
         self.mgr = mgr
         self.env = env
         self.api = api
         self.cache = cache
-
         if self.crds:
             cache.subscribe(self._crd_filter, self._crd_event)
-            cache.add_kind(CustomResourceDefinition)
-
-        for k, kw in self.kinds:
-            cache.add_kind(k, **dict(kw))
 
     async def spawn(self, *args, **kw):
+        if not self._taskgroup:
+            raise RuntimeError('not running')
         return await self._taskgroup.spawn(*args, **kw)
 
-    async def close(self):
-        await self._taskgroup.cancel_remaining()
-        await self._taskgroup.join()
+    async def start(self):
+        if self._taskgroup:
+            raise RuntimeError('already started')
+        self._taskgroup = curio.TaskGroup()
+        await self.ensure_crds()
+        synchronizers = []
+        for k, kw in self.kinds:
+            if isinstance(k, str):
+                k = await self.api.getKind(*k.rsplit('/', 1))
+            sync = self.cache_synchronizer_factory(self.cache, self.api, k, **dict(kw))
+            synchronizers.append(sync)
+            await self.spawn(sync.run)
+        await self.spawn(self._warmup, synchronizers)
 
-    def _crd_filter(self, event, obj):
-        return event == 'DELETED' and obj._selfLink() in self.crds
+    async def _warmup(self, synchronizers):
+        for sync in synchronizers:
+            await sync.warm.wait()
+        self._run_task = await self.spawn(self.run)
+        await self.running.set()
+
+    async def join(self):
+        await self.running.wait()
+        return await self._run_task.join()
+
+    async def run(self):
+        pass
+
+    async def close(self):
+        if self._taskgroup:
+            await self._taskgroup.cancel_remaining()
+            await self._taskgroup.join()
+            self._taskgroup = None
+
+    def _crd_filter(self, event, old, new):
+        return event == 'DELETED' and old._selfLink() in self.crds
 
     async def _crd_event(self, cache, event, old, new):
         await self.api.ensure_object(self.crds[old._selfLink()])
@@ -109,40 +139,21 @@ class ControllerManager(SyncContextManager):
     def __init__(self):
         self.envs = {}
         self.controllers = set()
-        self._taskgroup = None
 
     @sync_wrap
     async def spawn_controller(self, cls, env, **kw):
-        new_cache = False
         try:
             api, cache, refs = self.envs[env]
         except KeyError:
             api = self.api_client_factory(env)
-            cache = self.cache_factory(api)
-            cache._controller_run_task = None
+            cache = self.cache_factory()
             self.envs[env] = (api, cache, 1)
-            new_cache = True
         else:
             self.envs[env] = (api, cache, refs + 1)
 
         c = cls(self, env, api, cache, **kw)
         self.controllers.add(c)
-
-        if self._taskgroup:
-            try:
-                await c.ensure_crds()
-            except Exception:
-                self.log.exception('unhandled error creating crds')
-
-            if new_cache:
-                self.log.debug('starting cache')
-                cache._controller_run_task = await self._taskgroup.spawn(
-                    self._run_cache, cache)
-            else:
-                self.log.debug('resyncing cache')
-                await cache.resync()
-            await self._taskgroup.spawn(self._run_controller_method, c, 'run')
-
+        await c.start()
         return c
 
     @sync_wrap
@@ -152,73 +163,29 @@ class ControllerManager(SyncContextManager):
         self.log.info(f'stopping {type(c).__name__}')
         try:
             await c.close()
+        except curio.CancelledError:
+            raise
         except Exception:
             self.log.exception(f'unhandled error in controller close method')
         self.controllers.remove(c)
         api, cache, refs = self.envs[c.env]
         refs -= 1
         if refs <= 0:
-            self.log.info('shutting down cache and api for env')
+            self.log.info('shutting down api for env')
             del self.envs[c.env]
-            if cache._controller_run_task:
-                await cache._controller_run_task.cancel()
-                cache._controller_run_task = None
             await api.close()
         else:
             self.envs[c.env] = (api, cache, refs)
 
-    @sync_wrap
-    async def run(self, watch_signals=False):
-        if self._taskgroup:
-            raise RuntimeError('controller manager is already running')
-
-        self.log.info('controller manager starting')
-        self._taskgroup = curio.TaskGroup()
+    async def _join_controller(self, c):
         try:
-            async with self._taskgroup:
-                if watch_signals:
-                    await self._taskgroup.spawn(self._watch_signals)
-                for c in self.controllers:
-                    try:
-                        await c.ensure_crds()
-                    except Exception:
-                        self.log.exception('unhandled error creating crds')
-                for api, cache, refs in self.envs.values():
-                    self.log.debug('starting cache')
-                    cache._controller_run_task = await self._taskgroup.spawn(
-                        self._run_cache, cache)
-                for c in self.controllers:
-                    await self._taskgroup.spawn(self._run_controller_method, c, 'run')
-
+            await c.join()
+        except curio.CancelledError:
+            raise
+        except Exception:
+            self.log.exception('unhandled exception in controller join method')
         finally:
-            async with curio.TaskGroup() as g:
-                for c in self.controllers:
-                    await g.spawn(self.stop_controller, c)
-            self.log.info('controller manager finished')
-
-    async def _run_cache(self, cache):
-        try:
-            await cache.run()
-        except curio.CancelledError:
-            raise
-        except Exception:
-            self.log.exception('unhandled error in cache run method')
-
-    async def _run_controller_method(self, c, name):
-        method = getattr(c, name, None)
-        if not method:
-            return
-        if name == 'run':
-            self.log.info(f'running {type(c).__name__}')
-        try:
-            await method()
-        except curio.CancelledError:
-            self.log.info(f'{type(c).__name__}.{name} cancelled')
-            raise
-        except Exception:
-            self.log.exception(f'unhandled error in controller {name} method')
-        else:
-            self.log.info(f'{type(c).__name__}.{name} finished')
+            await self.stop_controller(c)
 
     async def __aenter__(self):
         return self
@@ -226,7 +193,15 @@ class ControllerManager(SyncContextManager):
     async def __aexit__(self, typ, val, tb):
         if typ:
             return
-        await self.run(watch_signals=True)
+        g = curio.TaskGroup()
+        stop_task = await g.spawn(self._watch_signals)
+        for c in self.controllers:
+            await g.spawn(self._join_controller(c))
+        while self.controllers:
+            task = await g.next_done()
+            if task in (None, stop_task):
+                break
+        await g.cancel_remaining()
 
     async def _watch_signals(self):
         async with curio.SignalQueue(signal.SIGTERM, signal.SIGINT) as q:
@@ -236,7 +211,6 @@ class ControllerManager(SyncContextManager):
             except ValueError:
                 signame = f'signal {sig}'
             self.log.info(f'caught {signame}')
-            await self._taskgroup.cancel_remaining()
 
 
 class ControllerLoader(PluginLoader):

@@ -19,8 +19,8 @@ import click
 from ..util import format_json, format_python, close_kernel
 from ..main import pass_env
 from .client import ApiClient
-from .watcher import Watch, Watcher
 from .cache import Cache
+from .cache_synchronizer import CacheSynchronizer
 
 
 def displayhook(value):
@@ -56,9 +56,8 @@ def cli():
             with ApiClient(env) as api:
                 context = {
                     'api': api,
-                    'Watcher': Watcher,
-                    'Watch': Watch,
                     'Cache': Cache,
+                    'CacheSynchronizer': CacheSynchronizer,
                 }
                 shell = code.InteractiveConsole(context)
                 shell.interact()
