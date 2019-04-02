@@ -210,6 +210,13 @@ class TestCacheSynchronizer(AsyncTestCase):
             call('/apis/enkube.local/v1/fookinds?resourceVersion=fooversion&watch=true', stream=True),
         ])
 
+    async def test_logs_exceptions_in_run_task(self):
+        self.streams.append([RuntimeError()])
+        self.streams.append([{'type': 'ADDED', 'object': dict(FooKind(metadata={'name': 'foo'}))}])
+        await self.sync.run()
+        self.sync.log.exception.assert_called_once_with('unhandled error')
+        self.cache.set.assert_called()
+
     async def test_cancellation(self):
         self.streams.append([curio.TaskCancelled()])
         with self.assertRaises(curio.CancelledError):

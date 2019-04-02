@@ -45,6 +45,11 @@ class CacheSynchronizer:
                 done.result
             except _TestLoopBreaker:
                 break
+            except curio.CancelledError:
+                raise
+            except Exception:
+                self.log.exception('unhandled error')
+                continue
             if done is run_task:
                 break
 
