@@ -17,7 +17,7 @@ FROM python:3.7-alpine as reqs
 WORKDIR /install
 COPY requirements.txt /enkube/requirements.txt
 
-ENV RELEASE=v1.13.5
+ENV RELEASE=v1.14.1
 RUN pip install -U pip \
 && apk add --no-cache --virtual=build-dependencies \
     build-base \
