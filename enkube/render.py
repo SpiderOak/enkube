@@ -15,8 +15,9 @@
 import os
 import re
 import json
-import _jsonnet
+import yaml
 import pyaml
+import _jsonnet
 import pkg_resources
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -28,7 +29,8 @@ from .main import pass_env
 
 
 SEARCH_EXTS = ['.jsonnet']
-URL_RX = re.compile(r'https?://')
+URL_RX = re.compile(r'https?://', re.I)
+YAML_RX = re.compile(r'\.ya?ml$', re.I)
 
 
 def _json_context_wrapper(func):
@@ -78,6 +80,12 @@ class BaseRenderer:
         return json.loads(s, object_pairs_hook=object_pairs_hook)
 
     def import_callback(self, dirname, rel):
+        rel, res = self._import_callback(dirname, rel)
+        if YAML_RX.search(rel):
+            res = json.dumps(list(yaml.safe_load_all(res)))
+        return rel, res
+
+    def _import_callback(self, dirname, rel):
         if rel == 'enkube/regex':
             return rel, self._regex_obj()
 
@@ -147,7 +155,7 @@ class Renderer(BaseRenderer):
                     ):
                         yield f
 
-    def import_callback(self, dirname, rel):
+    def _import_callback(self, dirname, rel):
         if rel == 'enkube/env':
             return rel, self.env.to_json()
 
@@ -156,7 +164,7 @@ class Renderer(BaseRenderer):
             return rel, self._renderer_obj(name)
 
         try:
-            return super(Renderer, self).import_callback(dirname, rel)
+            return super(Renderer, self)._import_callback(dirname, rel)
         except RuntimeError as err:
             if err.args[0] != 'file not found':
                 raise
