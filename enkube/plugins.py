@@ -35,9 +35,10 @@ class PluginLoader:
             self.__dict__['_plugins'] = {}
         if name not in self._plugins:
             try:
-                self._plugins[name] = self._entrypoints[name].load()
+                ep = self._entrypoints[name]
             except KeyError:
                 return None
+            self._plugins[name] = ep.load()
         return self._plugins[name]
 
     def load_all(self):
