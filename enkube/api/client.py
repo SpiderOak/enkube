@@ -22,7 +22,7 @@ import curio
 from curio import subprocess
 
 import asks
-asks.init('curio')
+from anyio import connect_unix
 
 from ..util import sync_wrap, SyncIter, SyncContextManager, flatten_kube_lists
 from .types import APIResourceList, Kind
@@ -90,7 +90,7 @@ class UnixSession(asks.Session):
         return 'http://localhost'
 
     async def _connect(self, host_loc):
-        sock = await curio.open_unix_connection(self._sock)
+        sock = await connect_unix(self._sock)
         sock._active = True
         return sock, '80'
 
