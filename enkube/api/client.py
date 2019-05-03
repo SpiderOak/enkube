@@ -375,7 +375,10 @@ class ApiClient(SyncContextManager):
     async def get_refs(self, refs, last_applied=False):
         for ref in flatten_kube_lists(refs):
             if not isinstance(ref, Kind):
-                kindCls = await self.getKind(ref['apiVersion'], ref['kind'])
+                try:
+                    kindCls = await self.getKind(ref['apiVersion'], ref['kind'])
+                except (ApiVersionNotFoundError, ResourceKindNotFoundError):
+                    continue
                 ref = kindCls(ref)
             path = ref._selfLink()
             try:
