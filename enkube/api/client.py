@@ -393,7 +393,10 @@ class ApiClient(SyncContextManager):
     async def create(self, obj):
         if not isinstance(obj, Kind):
             obj = await self._kindify(obj)
-        path = obj._makeLink(namespace=obj.metadata.get('namespace'))
+        kw = {}
+        if 'namespace' in obj.metadata:
+            kw['namespace'] = obj.metadata.namespace
+        path = obj._makeLink(**kw)
         return await self.post(path, json=obj)
 
     @sync_wrap

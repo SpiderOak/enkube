@@ -167,7 +167,7 @@ def cli():
         '''
         stdout = click.get_text_stream('stdout')
 
-        rendered = [o for _, o in renderer.render(object_pairs_hook=dict)]
+        rendered = [o for _, o in renderer.render(object_pairs_hook=dict) if o]
         local = gather_objects(rendered)
         try:
             with ApiClient(renderer.env) as api:
