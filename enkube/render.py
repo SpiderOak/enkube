@@ -30,7 +30,6 @@ from .main import pass_env
 
 SEARCH_EXTS = ['.jsonnet']
 URL_RX = re.compile(r'https?://', re.I)
-YAML_RX = re.compile(r'\.ya?ml$', re.I)
 
 
 def _json_context_wrapper(func):
@@ -49,6 +48,8 @@ def _regex_capture(rx, s):
 def load_native_callbacks(env=None):
     callbacks = {
         'regex/capture': (('regex', 'str'), _regex_capture),
+        'yaml/parseObj': (('str',), yaml.safe_load),
+        'yaml/parseDoc': (('str',), yaml.safe_load_all),
     }
     if env:
         for name in env.render_plugin_loader.list():
@@ -80,14 +81,14 @@ class BaseRenderer:
         return json.loads(s, object_pairs_hook=object_pairs_hook)
 
     def import_callback(self, dirname, rel):
-        rel, res = self._import_callback(dirname, rel)
-        if YAML_RX.search(rel):
-            res = json.dumps(list(yaml.safe_load_all(res)))
-        return rel, res
+        return self._import_callback(dirname, rel)
 
     def _import_callback(self, dirname, rel):
         if rel == 'enkube/regex':
             return rel, self._regex_obj()
+
+        elif rel == 'enkube/yaml':
+            return rel, self._yaml_obj()
 
         elif rel.startswith('enkube/'):
             if not rel.endswith('.libsonnet'):
@@ -112,6 +113,12 @@ class BaseRenderer:
     def _regex_obj(self):
         return '''{
             capture(regex, str):: std.native("regex/capture")(regex, str)
+        }'''
+
+    def _yaml_obj(self):
+        return '''{
+            parseObj(str):: std.native("yaml/parseObj")(str),
+            parseDoc(str):: std.native("yaml/parseDoc")(str),
         }'''
 
 
