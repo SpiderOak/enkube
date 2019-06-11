@@ -45,11 +45,18 @@ def _regex_capture(rx, s):
     return {}
 
 
+def _yaml_parseObj(s):
+    return yaml.safe_load(s)
+
+def _yaml_parseDoc(s):
+    return list(yaml.safe_load_all(s))
+
+
 def load_native_callbacks(env=None):
     callbacks = {
         'regex/capture': (('regex', 'str'), _regex_capture),
-        'yaml/parseObj': (('str',), yaml.safe_load),
-        'yaml/parseDoc': (('str',), yaml.safe_load_all),
+        'yaml/parseObj': (('str',), _yaml_parseObj),
+        'yaml/parseDoc': (('str',), _yaml_parseDoc),
     }
     if env:
         for name in env.render_plugin_loader.list():

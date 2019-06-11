@@ -89,9 +89,10 @@ class Environment:
 
     def get_kubectl_environ(self):
         envvars = os.environ.copy()
-        p = self.kubeconfig_path()
-        if p:
-            envvars['KUBECONFIG'] = p
+        if 'KUBECONFIG' not in envvars:
+            p = self.kubeconfig_path()
+            if p:
+                envvars['KUBECONFIG'] = p
         return envvars
 
     def spawn_kubectl(self, args, **kw):
