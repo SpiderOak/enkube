@@ -80,8 +80,10 @@ def cli():
     @click.argument('files', nargs=-1, type=click.Path(exists=True))
     @click.option('--inplace', '-i', is_flag=True)
     @click.option('--yaml', '-y', 'isyaml', is_flag=True)
-    def cli(files, inplace, isyaml):
+    @click.option('--yamldoc', '-l', 'isyamldoc', is_flag=True)
+    def cli(files, inplace, isyaml, isyamldoc):
         '''Format jsonnet files according to conventions.'''
+        isyaml = isyaml or isyamldoc
         if isyaml and inplace:
             click.secho('--inplace not supported for yaml', fg='red', err=True)
             sys.exit(1)
@@ -93,10 +95,10 @@ def cli():
             for f in files:
                 if isyaml:
                     if f == '-':
-                        obj = load_yaml(click.get_text_stream('stdin'))
+                        obj = load_yaml(click.get_text_stream('stdin'), load_doc=isyamldoc)
                     else:
                         with open(f, 'r') as f:
-                            obj = load_yaml(f)
+                            obj = load_yaml(f, load_doc=isyamldoc)
                     fmt.format(
                         json.dumps(obj, indent=2).encode('utf-8'),
                         outfile=click.get_text_stream('stdout')

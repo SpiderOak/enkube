@@ -30,7 +30,7 @@ from curio.meta import (
 from curio.monitor import Monitor
 
 
-def load_yaml(stream, Loader=yaml.SafeLoader, object_pairs_hook=OrderedDict):
+def load_yaml(stream, Loader=yaml.SafeLoader, object_pairs_hook=OrderedDict, load_doc=False):
     class OrderedLoader(Loader):
         pass
     def construct_mapping(loader, node):
@@ -38,6 +38,8 @@ def load_yaml(stream, Loader=yaml.SafeLoader, object_pairs_hook=OrderedDict):
         return object_pairs_hook(loader.construct_pairs(node))
     OrderedLoader.add_constructor(
         yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct_mapping)
+    if load_doc:
+        return list(yaml.load_all(stream, OrderedLoader))
     return yaml.load(stream, OrderedLoader)
 
 
