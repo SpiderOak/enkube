@@ -34,7 +34,8 @@ setup(
             'controller = enkube.controller:cli',
         ],
         'enkube.renderers': [
-            'jinja2 = enkube.jinja2:Renderer'
+            'jinja2 = enkube.jinja2:Renderer',
+            'helm = enkube.helm:Renderer',
         ],
     },
     test_suite='enkube.test',

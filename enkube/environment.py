@@ -72,9 +72,10 @@ class Environment:
 
     def load_renderer(self, name):
         if name not in self.renderers:
-            renderer = self.render_plugin_loader.load(name)(self)
-            if renderer is None:
+            cls = self.render_plugin_loader.load(name)
+            if not cls:
                 return None
+            renderer = cls(self)
             self.renderers[name] = renderer
         return self.renderers[name]
 

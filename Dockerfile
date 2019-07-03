@@ -17,7 +17,9 @@ FROM python:3.7-alpine as reqs
 WORKDIR /install
 COPY requirements.txt /enkube/requirements.txt
 
-ENV RELEASE=v1.14.1
+ENV RELEASE=v1.15.0
+ENV HELM_RELEASE=v2.14.1
+
 RUN pip install -U pip \
 && apk add --no-cache --virtual=build-dependencies \
     build-base \
@@ -25,6 +27,8 @@ RUN pip install -U pip \
 && mkdir bin \
 && curl -sL https://storage.googleapis.com/kubernetes-release/release/${RELEASE}/bin/linux/amd64/kubectl > bin/kubectl \
 && chmod 0755 bin/kubectl \
+&& curl -sL https://get.helm.sh/helm-${HELM_RELEASE}-linux-amd64.tar.gz | tar -C /tmp -xzv \
+&& mv /tmp/linux-amd64/helm bin \
 && pip install --install-option="--prefix=/install" -r /enkube/requirements.txt
 
 FROM python:3.7-alpine
