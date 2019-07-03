@@ -58,4 +58,4 @@ class CommandPluginLoader(click.MultiCommand, PluginLoader):
 
 
 class RenderPluginLoader(PluginLoader):
-    entrypoint_type = 'enkube.renderers'
+    entrypoint_type = 'enkube.render_plugins'

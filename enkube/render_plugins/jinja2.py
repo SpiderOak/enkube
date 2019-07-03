@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import json
 from jinja2 import Environment, BaseLoader, TemplateNotFound
 
 
@@ -37,10 +38,12 @@ class Renderer:
         self.env = env
         self.jinja_env = Environment(loader=Loader(env))
 
-    def render(self, template, context):
+    def render(self, dirname, template, context:'json') -> 'cb':
+        context = json.loads(context)
         template = self.jinja_env.get_template(template)
         return template.render(**context)
 
-    def render_string(self, template_string, context):
+    def render_string(self, dirname, template_string, context:'json') -> 'cb':
+        context = json.loads(context)
         template = self.jinja_env.from_string(template_string)
         return template.render(**context)

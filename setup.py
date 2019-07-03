@@ -33,9 +33,11 @@ setup(
             'gpg = enkube.gpg:cli',
             'controller = enkube.controller:cli',
         ],
-        'enkube.renderers': [
-            'jinja2 = enkube.jinja2:Renderer',
-            'helm = enkube.helm:Renderer',
+        'enkube.render_plugins': [
+            'regex = enkube.render_plugins.util:Regex',
+            'yaml = enkube.render_plugins.util:Yaml',
+            'render/jinja2 = enkube.render_plugins.jinja2:Renderer',
+            'render/helm = enkube.render_plugins.helm:Helm',
         ],
     },
     test_suite='enkube.test',

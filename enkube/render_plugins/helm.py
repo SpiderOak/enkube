@@ -17,25 +17,30 @@ import json
 import tempfile
 import subprocess
 
-from .util import load_yaml
+from ..util import load_yaml
 
 
-class Renderer:
+class Helm:
     def __init__(self, env):
         self.env = env
 
-    def _helm(self, chart, values):
+    def template(self, dirname, chart, args:'json', values:'json') -> 'cb':
+        args = json.loads(args)
+        values = json.loads(values)
+
+        for d in self.env.search_dirs(post=[dirname]):
+            abs_chart = os.path.join(d, chart)
+            if os.path.exists(abs_chart):
+                break
+        else:
+            raise RuntimeError('chart not found')
+
         with tempfile.TemporaryDirectory() as d:
             values_file = os.path.join(d, 'values.json')
             with open(values_file, 'w') as f:
                 json.dump(values, f)
             with subprocess.Popen(
-                ['helm', 'template', chart, '--values', values_file],
+                ['helm', 'template', abs_chart, '--values', values_file] + args,
                 stdout=subprocess.PIPE,
             ) as p:
                 return load_yaml(p.stdout, load_doc=True)
-
-    def render(self, template, context):
-        return self._helm(template, context)
-
-    render_string = None

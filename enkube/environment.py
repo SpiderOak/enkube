@@ -19,8 +19,6 @@ import tempfile
 
 from curio import subprocess
 
-from .plugins import RenderPluginLoader
-
 LOG = logging.getLogger(__name__)
 
 
@@ -34,8 +32,6 @@ class Environment:
         self.parents = []
         self.envdir = self._find_envdir()
         self.parents = self._load_parents()
-        self.render_plugin_loader = RenderPluginLoader()
-        self.renderers = {}
 
     def _find_envdir(self):
         if not self.name:
@@ -69,15 +65,6 @@ class Environment:
         yield os.getcwd()
         for d in post:
             yield d
-
-    def load_renderer(self, name):
-        if name not in self.renderers:
-            cls = self.render_plugin_loader.load(name)
-            if not cls:
-                return None
-            renderer = cls(self)
-            self.renderers[name] = renderer
-        return self.renderers[name]
 
     def kubeconfig_path(self):
         for d in self.search_dirs():

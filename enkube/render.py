@@ -15,16 +15,18 @@
 import os
 import re
 import json
-import yaml
 import pyaml
 import _jsonnet
 import pkg_resources
+import inspect
 from collections import OrderedDict
 from collections.abc import Mapping
 from functools import update_wrapper
 import requests
 import click
 
+from .environment import Environment
+from .plugins import RenderPluginLoader
 from .main import pass_env
 
 
@@ -32,49 +34,46 @@ SEARCH_EXTS = ['.jsonnet']
 URL_RX = re.compile(r'https?://', re.I)
 
 
-def _json_context_wrapper(func):
-    def render(template, context):
-        return func(template, json.loads(context))
-    return render
+def _plugin_callbacks(plugin):
+    for attr in dir(plugin):
+        if attr.startswith('_'):
+            continue
+        cb = getattr(plugin, attr)
+        if not callable(cb):
+            continue
+        if cb.__annotations__.get('return') != 'cb':
+            continue
+        argspec = inspect.getfullargspec(cb)
+        yield attr, cb, argspec
 
 
-def _regex_capture(rx, s):
-    m = re.search(rx, s)
-    if m:
-        return m.groupdict()
-    return {}
-
-
-def _yaml_parseObj(s):
-    return yaml.safe_load(s)
-
-def _yaml_parseDoc(s):
-    return list(yaml.safe_load_all(s))
-
-
-def load_native_callbacks(env=None):
-    callbacks = {
-        'regex/capture': (('regex', 'str'), _regex_capture),
-        'yaml/parseObj': (('str',), _yaml_parseObj),
-        'yaml/parseDoc': (('str',), _yaml_parseDoc),
-    }
-    if env:
-        for name in env.render_plugin_loader.list():
-            renderer = env.load_renderer(name)
-            callbacks['render/{}.render'.format(name)] = (
-                ('template', 'context'),
-                _json_context_wrapper(renderer.render)
-            )
-            callbacks['render/{}.render_string'.format(name)] = (
-                ('template_string', 'context'),
-                _json_context_wrapper(renderer.render_string)
-            )
-    return callbacks
+def _plugin_cb_import(prefix, plugin, dirname):
+    callback_strings = ['local dirname=' + json.dumps(dirname)]
+    for attr, cb, argspec in _plugin_callbacks(plugin):
+        args = ', '.join(argspec.args[2:])
+        annotated_args = ', '.join(
+            f'std.manifestJsonEx({arg}, " ")' if argspec.annotations.get(arg) == 'json' else arg
+            for arg in argspec.args[2:]
+        )
+        callback_strings.append(
+            f'{attr}({args}):: std.native("{prefix}.{attr}")(dirname, {annotated_args})')
+    return '{' + ', '.join(callback_strings) + '}'
 
 
 class BaseRenderer:
     verify_namespace = True
-    native_callbacks = load_native_callbacks()
+    env = Environment()
+    plugin_loader = RenderPluginLoader()
+
+    @property
+    def native_callbacks(self):
+        callbacks = {}
+        for name in self.plugin_loader.list():
+            plugin = self.plugin_loader.load(name)(self.env)
+            for attr, cb, argspec in _plugin_callbacks(plugin):
+                args = tuple(argspec.args[1:])
+                callbacks[f'{name}.{attr}'] = (args, cb)
+        return callbacks
 
     def render_jsonnet(self, name, s, object_pairs_hook=OrderedDict):
         s = _jsonnet.evaluate_snippet(
@@ -91,19 +90,17 @@ class BaseRenderer:
         return self._import_callback(dirname, rel)
 
     def _import_callback(self, dirname, rel):
-        if rel == 'enkube/regex':
-            return rel, self._regex_obj()
+        if rel.startswith('enkube/'):
+            n = rel.split('/', 1)[1]
+            if n in self.plugin_loader._entrypoints:
+                plugin = self.plugin_loader.load(n)(self.env)
+                return rel, _plugin_cb_import(n, plugin, dirname)
 
-        elif rel == 'enkube/yaml':
-            return rel, self._yaml_obj()
-
-        elif rel.startswith('enkube/'):
-            if not rel.endswith('.libsonnet'):
-                rel += '.libsonnet'
+            if not n.endswith('.libsonnet'):
+                n += '.libsonnet'
             try:
                 res = pkg_resources.resource_string(
-                    __name__, os.path.join('libsonnet', rel.split('/', 1)[1])
-                ).decode('utf-8')
+                    __name__, os.path.join('libsonnet', n)).decode('utf-8')
                 return rel, res
             except Exception:
                 pass
@@ -117,22 +114,10 @@ class BaseRenderer:
 
         raise RuntimeError('file not found')
 
-    def _regex_obj(self):
-        return '''{
-            capture(regex, str):: std.native("regex/capture")(regex, str)
-        }'''
-
-    def _yaml_obj(self):
-        return '''{
-            parseObj(str):: std.native("yaml/parseObj")(str),
-            parseDoc(str):: std.native("yaml/parseDoc")(str),
-        }'''
-
 
 class Renderer(BaseRenderer):
     def __init__(self, env, files=(), exclude=(), verify_namespace=True):
         self.env = env
-        self.native_callbacks = load_native_callbacks(self.env)
         self.files = list(files)
         self.exclude = list(exclude)
         self.verify_namespace = verify_namespace
@@ -173,10 +158,6 @@ class Renderer(BaseRenderer):
         if rel == 'enkube/env':
             return rel, self.env.to_json()
 
-        elif rel.startswith('enkube/render/'):
-            name = rel.split('/', 1)[1]
-            return rel, self._renderer_obj(name)
-
         try:
             return super(Renderer, self)._import_callback(dirname, rel)
         except RuntimeError as err:
@@ -194,18 +175,6 @@ class Renderer(BaseRenderer):
                 continue
 
         raise RuntimeError('file not found')
-
-    def _renderer_obj(self, name):
-        return '''{{
-            render(template, context)::
-              std.native("{name}.render")(
-                template, std.manifestJsonEx(context, " ")),
-            render_string(template_string, context)::
-              std.native("{name}.render_string")(
-                template_string, std.manifestJsonEx(context, " ")),
-            r:: self.render,
-            rs:: self.render_string,
-        }}'''.format(name=name)
 
 
 class RenderError(click.ClickException):
