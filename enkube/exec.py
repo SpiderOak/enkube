@@ -31,7 +31,8 @@ def cli():
     @click.option('-n', 'namespace', required=True)
     @click.argument('args', nargs=-1, type=click.UNPROCESSED)
     @pass_env
-    def cli(env, namespace, labels, args):
+    @click.pass_context
+    def cli(ctx, env, namespace, labels, args):
         '''Convenience wrapper for kubectl exec.'''
         try:
             with ApiClient(env) as api:
@@ -49,6 +50,6 @@ def cli():
 
         click.secho(f'Found pod {podname}', fg='cyan')
         args = ['-n', namespace, 'exec', podname] + list(args)
-        kubectl_popen(env, args).wait()
+        ctx.exit(kubectl_popen(env, args).wait())
 
     return cli

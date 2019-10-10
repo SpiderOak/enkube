@@ -25,7 +25,8 @@ def cli():
     @click.command()
     @click.option('--dry-run', is_flag=True)
     @pass_renderer
-    def cli(renderer, dry_run):
+    @click.pass_context
+    def cli(ctx, renderer, dry_run):
         '''Render and apply Kubernetes manifests.'''
         args = ['apply', '-f', '-']
         if dry_run:
@@ -39,6 +40,6 @@ def cli():
                 shutil.copyfileobj(f, p.stdin)
             finally:
                 p.stdin.close()
-                p.wait()
+                ctx.exit(p.wait())
 
     return cli

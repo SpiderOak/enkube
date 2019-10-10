@@ -33,8 +33,9 @@ def cli():
     )
     @click.argument('args', nargs=-1, type=click.UNPROCESSED)
     @pass_env
-    def cli(env, args):
+    @click.pass_context
+    def cli(ctx, env, args):
         '''Wrap kubectl, setting KUBECONFIG according to selected environment.'''
-        kubectl_popen(env, list(args)).wait()
+        ctx.exit(kubectl_popen(env, list(args)).wait())
 
     return cli
