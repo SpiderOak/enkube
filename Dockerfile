@@ -17,7 +17,7 @@ FROM python:3.7-alpine as reqs
 WORKDIR /install
 COPY requirements.txt /enkube/requirements.txt
 
-ENV RELEASE=v1.15.3
+ENV RELEASE=v1.16.1
 ENV HELM_RELEASE=v2.14.3
 
 RUN pip install -U pip \
