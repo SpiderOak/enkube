@@ -60,7 +60,7 @@ class CacheSynchronizer:
         l = await self.api.get(path)
         resourceVersion = l.metadata.resourceVersion
 
-        for obj in l['items']:
+        for obj in l.get('items', []):
             try:
                 path = obj._selfLink()
             except AttributeError:
