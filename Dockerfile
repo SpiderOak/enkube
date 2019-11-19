@@ -35,6 +35,7 @@ FROM python:3.7-alpine
 
 RUN apk add --no-cache \
     libstdc++ \
+    tini \
 && pip install -U pip
 
 COPY --from=reqs /install /usr/local
@@ -42,4 +43,4 @@ COPY . /enkube
 
 RUN pip install -e /enkube
 
-ENTRYPOINT ["enkube"]
+ENTRYPOINT ["/sbin/tini", "--", "enkube"]
