@@ -29,7 +29,7 @@ RUN pip install -U pip \
 && chmod 0755 bin/kubectl \
 && curl -sL https://get.helm.sh/helm-${HELM_RELEASE}-linux-amd64.tar.gz | tar -C /tmp -xzv \
 && mv /tmp/linux-amd64/helm bin \
-&& pip install --install-option="--prefix=/install" -r /enkube/requirements.txt
+&& pip install --prefix=/install -r /enkube/requirements.txt
 
 FROM python:3.7-alpine
 
