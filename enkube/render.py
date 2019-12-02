@@ -189,20 +189,12 @@ class Renderer(BaseRenderer):
 class JunitRenderer(Renderer):
     def __init__(self, env, files=(), exclude=(), verify_namespace=True, output_filename=None):
         super(JunitRenderer, self).__init__(env, files, exclude, verify_namespace)
-        self.test_suites = []
-        self.test_suites_by_name = {}
+        self.test_cases = []
         self.output_filename = output_filename
 
     def render_jsonnet(self, name, s, object_pairs_hook=OrderedDict):
-        suite_name, case_name = os.path.split(name)
-        try:
-            suite = self.test_suites_by_name[suite_name]
-        except KeyError:
-            suite = TestSuite(suite_name, [])
-            self.test_suites.append(suite)
-            self.test_suites_by_name[suite_name] = suite
-        test_case = TestCase(case_name, file=name)
-        suite.test_cases.append(test_case)
+        test_case = TestCase(name, file=name)
+        self.test_cases.append(test_case)
 
         start = timer()
         try:
@@ -223,7 +215,9 @@ class JunitRenderer(Renderer):
         finally:
             if self.output_filename:
                 with f:
-                    TestSuite.to_file(f, self.test_suites, prettyprint=False)
+                    TestSuite.to_file(f, [
+                        TestSuite(self.env.name or 'default', self.test_cases)
+                    ], prettyprint=False)
 
 
 class RenderError(click.ClickException):
