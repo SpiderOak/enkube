@@ -6,6 +6,7 @@ curio
 deepdiff
 jinja2
 jsonnet
+junit-xml
 pyaml
 pygments
 requests

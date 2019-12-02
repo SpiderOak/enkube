@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import sys
 import re
 import json
 import pyaml
@@ -24,6 +25,9 @@ from collections.abc import Mapping
 from functools import update_wrapper
 import requests
 import click
+import traceback
+from junit_xml import TestSuite, TestCase
+from timeit import default_timer as timer
 
 from .environment import Environment
 from .plugins import RenderPluginLoader
@@ -125,13 +129,18 @@ class Renderer(BaseRenderer):
         if not self.files:
             self.files = [click.Path(exists=True)('manifests')]
 
-    def render(self, object_pairs_hook=OrderedDict):
+    def render(self, object_pairs_hook=OrderedDict, raise_errors=True):
         for f in self.find_files(self.files, True):
             with f:
                 s = f.read()
-            obj = self.render_jsonnet(
-                f.name, s, object_pairs_hook=object_pairs_hook)
-            yield f.name, obj
+            try:
+                obj = self.render_jsonnet(
+                    f.name, s, object_pairs_hook=object_pairs_hook)
+            except Exception:
+                if raise_errors:
+                    raise
+            else:
+                yield f.name, obj
 
     def render_to_stream(self, stream):
         for fname, obj in self.render():
@@ -177,6 +186,46 @@ class Renderer(BaseRenderer):
         raise RuntimeError('file not found')
 
 
+class JunitRenderer(Renderer):
+    def __init__(self, env, files=(), exclude=(), verify_namespace=True, output_filename=None):
+        super(JunitRenderer, self).__init__(env, files, exclude, verify_namespace)
+        self.test_suites = []
+        self.test_suites_by_name = {}
+        self.output_filename = output_filename
+
+    def render_jsonnet(self, name, s, object_pairs_hook=OrderedDict):
+        suite_name, case_name = os.path.split(name)
+        try:
+            suite = self.test_suites_by_name[suite_name]
+        except KeyError:
+            suite = TestSuite(suite_name, [])
+            self.test_suites.append(suite)
+            self.test_suites_by_name[suite_name] = suite
+        test_case = TestCase(case_name, file=name)
+        suite.test_cases.append(test_case)
+
+        start = timer()
+        try:
+            return super(JunitRenderer, self).render_jsonnet(name, s, object_pairs_hook)
+        except Exception:
+            test_case.add_error_info(str(sys.exc_info()[1]), traceback.format_exc())
+            raise
+        finally:
+            end = timer()
+            test_case.elapsed_sec = end - start
+
+    def render(self, object_pairs_hook=OrderedDict, raise_errors=False):
+        if self.output_filename:
+            f = open(self.output_filename, 'w')
+        try:
+            for ret in super(JunitRenderer, self).render(object_pairs_hook, raise_errors):
+                yield ret
+        finally:
+            if self.output_filename:
+                with f:
+                    TestSuite.to_file(f, self.test_suites, prettyprint=False)
+
+
 class RenderError(click.ClickException):
     def show(self):
         click.secho('Render error: {}'.format(self.args[0]), fg='red', err=True)
@@ -186,9 +235,13 @@ def pass_renderer(callback):
     @click.argument('files', nargs=-1, type=click.Path(exists=True))
     @click.option('--exclude', multiple=True, type=click.Path())
     @click.option('--verify-namespace/--no-verify-namespace', default=True)
+    @click.option('--junit-xml', type=click.Path())
     @pass_env
-    def inner(env, files, exclude, verify_namespace, *args, **kwargs):
-        env.renderer = Renderer(env, files, exclude, verify_namespace)
+    def inner(env, files, exclude, verify_namespace, junit_xml, *args, **kwargs):
+        if junit_xml:
+            env.renderer = JunitRenderer(env, files, exclude, verify_namespace, junit_xml)
+        else:
+            env.renderer = Renderer(env, files, exclude, verify_namespace)
         return callback(env.renderer, *args, **kwargs)
     return update_wrapper(inner, callback)
 
