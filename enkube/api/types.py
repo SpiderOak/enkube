@@ -196,6 +196,7 @@ class OwnerRef(KubeDict):
     apiVersion: required(str)
     kind: required(str)
     name: required(str)
+    namespace: str
     uid: str
     controller: bool
     blockOwnerDeletion: bool
