@@ -147,6 +147,23 @@ class Renderer(BaseRenderer):
             click.secho('---\n# File: {}'.format(fname), file=stream, fg='blue')
             pyaml.dump(obj, stream, safe=True)
 
+    def render_to_directory(self, dirname):
+        for fname, obj in self.render():
+            path = os.path.splitext(
+                os.path.join(dirname, self.get_rel_path(fname)))[0] + '.yaml'
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w') as f:
+                f.write(f'---\n# File: {fname}\n')
+                pyaml.dump(obj, f, safe=True)
+
+    def get_rel_path(self, fname):
+        for prefix in sorted(self.files, key=lambda f: len(f), reverse=True):
+            if fname == prefix:
+                return os.path.basename(fname)
+            if fname.startswith(prefix) and fname[len(prefix)] == os.path.sep:
+                return fname[len(prefix):].lstrip(os.path.sep)
+        return fname.lstrip(os.path.sep)
+
     def find_files(self, paths, explicit=False):
         for p in paths:
             if p in self.exclude:
@@ -242,12 +259,16 @@ def pass_renderer(callback):
 
 def cli():
     @click.command()
+    @click.option('--output-dir', type=click.Path())
     @pass_renderer
-    def cli(renderer):
+    def cli(renderer, output_dir):
         '''Render Kubernetes manifests.'''
-        stdout = click.get_text_stream('stdout')
         try:
-            renderer.render_to_stream(stdout)
+            if output_dir:
+                renderer.render_to_directory(output_dir)
+            else:
+                stdout = click.get_text_stream('stdout')
+                renderer.render_to_stream(stdout)
         except RuntimeError as e:
             raise RenderError(e.args[0])
 
