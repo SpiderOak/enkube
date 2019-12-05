@@ -20,7 +20,7 @@ import tempfile
 from collections import OrderedDict, deque
 import click
 
-from .util import format_diff, flatten_kube_lists, close_kernel
+from .util import format_diff, flatten_kube_lists, close_kernel, load_yaml
 from .render import pass_renderer
 from .api import ApiClient
 
@@ -158,8 +158,9 @@ def cli():
         '--list', '-l', 'list_', is_flag=True,
         help='Only list names of changed objects'
     )
+    @click.option('--rendered', 'is_rendered', is_flag=True)
     @pass_renderer
-    def cli(renderer, last_applied, show_deleted, quiet, list_):
+    def cli(renderer, last_applied, show_deleted, quiet, list_, is_rendered):
         '''Show differences between rendered manifests and running state.
 
         By default, compare to last applied configuration. Note that in this mode,
@@ -167,7 +168,13 @@ def cli():
         '''
         stdout = click.get_text_stream('stdout')
 
-        rendered = [o for _, o in renderer.render(object_pairs_hook=dict) if o]
+        if is_rendered:
+            rendered = []
+            for f in renderer.find_files(renderer.files, True):
+                rendered.extend(load_yaml(f, load_doc=True))
+        else:
+            rendered = [o for _, o in renderer.render(object_pairs_hook=dict) if o]
+
         local = gather_objects(rendered)
         try:
             with ApiClient(renderer.env) as api:
