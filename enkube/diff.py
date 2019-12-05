@@ -170,7 +170,7 @@ def cli():
 
         if is_rendered:
             rendered = []
-            for f in renderer.find_files(renderer.files, True):
+            for f in renderer.find_files(renderer.files, ['.yaml', '.yml'], True):
                 rendered.extend(load_yaml(f, load_doc=True))
         else:
             rendered = [o for _, o in renderer.render(object_pairs_hook=dict) if o]

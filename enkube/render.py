@@ -130,7 +130,7 @@ class Renderer(BaseRenderer):
             self.files = [click.Path(exists=True)('manifests')]
 
     def render(self, object_pairs_hook=OrderedDict, raise_errors=True):
-        for f in self.find_files(self.files, True):
+        for f in self.find_files(self.files, explicit=True):
             with f:
                 s = f.read()
             try:
@@ -164,20 +164,19 @@ class Renderer(BaseRenderer):
                 return fname[len(prefix):].lstrip(os.path.sep)
         return fname.lstrip(os.path.sep)
 
-    def find_files(self, paths, explicit=False):
+    def find_files(self, paths, exts=SEARCH_EXTS, explicit=False):
         for p in paths:
             if p in self.exclude:
                 continue
             if explicit and not os.path.isdir(p):
                 yield open(p)
             else:
-                for ext in SEARCH_EXTS:
+                for ext in exts:
                     if p.endswith(ext) and os.path.isfile(p):
                         yield open(p)
                 if os.path.isdir(p):
-                    for f in self.find_files(
-                        [os.path.join(p, n) for n in sorted(os.listdir(p))]
-                    ):
+                    children = [os.path.join(p, n) for n in sorted(os.listdir(p))]
+                    for f in self.find_files(children, exts):
                         yield f
 
     def _import_callback(self, dirname, rel):
