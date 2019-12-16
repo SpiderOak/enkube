@@ -19,6 +19,8 @@ import tempfile
 
 from curio import subprocess
 
+from .kubeconfig import KubeConfig, InclusterConfig
+
 LOG = logging.getLogger(__name__)
 
 
@@ -71,6 +73,12 @@ class Environment:
             p = os.path.join(d, '.kubeconfig')
             if os.path.exists(p):
                 return p
+
+    def get_kubeconfig(self):
+        path = os.environ.get('KUBECONFIG') or self.kubeconfig_path()
+        if not path:
+            return InclusterConfig()
+        return KubeConfig.load_from_file(path)
 
     def get_kubectl_path(self):
         return 'kubectl'

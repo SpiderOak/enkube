@@ -19,12 +19,10 @@ import tempfile
 from functools import partialmethod
 
 import curio
-from curio import subprocess
-
 import asks
-from anyio import connect_unix
 
 from ..util import sync_wrap, SyncIter, SyncContextManager, flatten_kube_lists
+from ..kubeconfig import KubeConfig
 from .types import APIResourceList, Kind
 
 LOG = logging.getLogger(__name__)
@@ -81,23 +79,6 @@ class StreamIter(SyncIter, SyncContextManager):
         await self.resp.body.close()
 
 
-class UnixSession(asks.Session):
-    def __init__(self, sock, **kw):
-        super(UnixSession, self).__init__(**kw)
-        self._sock = sock
-
-    def _make_url(self):
-        return 'http://localhost'
-
-    async def _connect(self, host_loc):
-        sock = await connect_unix(self._sock)
-        sock._active = True
-        return sock, '80'
-
-    async def close(self):
-        await self.__aexit__(None, None, None)
-
-
 class ApiClient(SyncContextManager):
     log = LOG.getChild('ApiClient')
     _max_conns = 20
@@ -106,107 +87,14 @@ class ApiClient(SyncContextManager):
     def __init__(self, env):
         self.env = env
         self.session = None
-        self._tmpdir = None
-        self._sock = None
-        self._proxy = None
-        self._closed = False
-        self._startup_lock = curio.Lock()
-        self._poll_lock = curio.Lock()
         self._apiVersion_cache = {}
         self._kind_cache = {}
         self.healthy = curio.Event()
 
-    async def _poll_proxy(self, wait=False):
-        async with self._poll_lock:
-            if not self._proxy:
-                return False
-            p = self._proxy
-            try:
-                if wait:
-                    await p.wait()
-                else:
-                    p.poll()
-            except ProcessLookupError:
-                self.log.warning(f'subprocess with pid {p.pid} not found')
-            else:
-                if p.returncode is None:
-                    return True
-                if p.returncode == 0:
-                    self.log.debug(f'subprocess (pid {p.pid}) exited cleanly')
-                else:
-                    lvl = logging.DEBUG if self._closed else logging.WARNING
-                    self.log.log(
-                        lvl,
-                        f'subprocess (pid {p.pid}) terminated '
-                        f'with return code {p.returncode}'
-                    )
-            self._proxy = None
-            return False
-
-    async def _read_proxy_stdout(self):
-        if not self._proxy:
-            return
-        try:
-            async for _ in self._proxy.stdout:
-                pass
-        except Exception:
-            pass
-        finally:
-            await self._poll_proxy()
-
-    async def _wait_for_proxy(self):
-        assert self._startup_lock.locked()
-        line = await self._proxy.stdout.readline()
-        if not line.startswith(b'Starting to serve'):
-            raise ApiError(reason='Got gibberish from kubectl proxy')
-        await curio.spawn(self._read_proxy_stdout, daemon=True)
-
-    async def _ensure_proxy(self):
-        if self._closed:
-            raise RuntimeError('API client is closed')
-        assert self._startup_lock.locked()
-        if await self._poll_proxy():
-            return
-
-        if not self._tmpdir:
-            self._tmpdir = tempfile.TemporaryDirectory()
-            self._sock = os.path.join(self._tmpdir.name, 'proxy.sock')
-
-        self._proxy = self.env.spawn_kubectl(
-            ['proxy', '-u', self._sock],
-            stdout=subprocess.PIPE,
-            preexec_fn=os.setpgrp,
-        )
-
-        await self._wait_for_proxy()
-
-    async def _ensure_session(self):
-        async with self._startup_lock:
-            await self._ensure_proxy()
-            if self.session is None:
-                self.session = UnixSession(
-                    self._sock, connections=self._max_conns)
-
-    def _cleanup_tmpdir(self):
-        self._sock = None
-        if self._tmpdir:
-            self._tmpdir.cleanup()
-            self._tmpdir = None
-
-    def __del__(self):
-        if self._proxy:
-            try:
-                self._proxy.terminate()
-            except ProcessLookupError:
-                pass
-        self._closed = True
-        self._cleanup_tmpdir()
-
     @sync_wrap
     async def close(self):
-        self.__del__()
-        if self._proxy:
-            await self._poll_proxy(wait=True)
+        if self.session:
+            await self.session.close()
 
     async def __aenter__(self):
         return self
@@ -224,10 +112,16 @@ class ApiClient(SyncContextManager):
                 obj = kindCls(obj)
         return obj
 
+    def _get_session(self):
+        ctx, url, headers = self.env.get_kubeconfig().get_connection_info()
+        return asks.Session(
+            url, headers=headers, ssl_context=ctx, connections=self._max_conns)
+
     @sync_wrap
     async def request(self, method, path, **kw):
         self.log.debug(f'{method} {path}')
-        await self._ensure_session()
+        if not self.session:
+            self.session = self._get_session()
         resp = await self.session.request(method=method, path=path, **kw)
         if not (200 <= resp.status_code < 300):
             if resp.status_code == 404:

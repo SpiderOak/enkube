@@ -17,10 +17,6 @@ import sys
 import click
 
 from ..util import format_json, format_python, close_kernel
-from ..main import pass_env
-from .client import ApiClient
-from .cache import Cache
-from .cache_synchronizer import CacheSynchronizer
 
 
 def displayhook(value):
@@ -40,6 +36,11 @@ def displayhook(value):
 
 
 def cli():
+    from ..main import pass_env
+    from .client import ApiClient
+    from .cache import Cache
+    from .cache_synchronizer import CacheSynchronizer
+
     @click.command()
     @pass_env
     def cli(env):
