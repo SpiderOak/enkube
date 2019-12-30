@@ -259,14 +259,18 @@ def pass_renderer(callback):
 def cli():
     @click.command()
     @click.option('--output-dir', type=click.Path())
+    @click.option('--json', 'json_out', is_flag=True)
     @pass_renderer
-    def cli(renderer, output_dir):
+    def cli(renderer, output_dir, json_out):
         '''Render Kubernetes manifests.'''
         try:
+            stdout = click.get_text_stream('stdout')
             if output_dir:
                 renderer.render_to_directory(output_dir)
+            elif json_out:
+                for _, obj in renderer.render():
+                    json.dump(obj, stdout)
             else:
-                stdout = click.get_text_stream('stdout')
                 renderer.render_to_stream(stdout)
         except RuntimeError as e:
             raise RenderError(e.args[0])
