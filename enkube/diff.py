@@ -22,7 +22,7 @@ import click
 
 from .util import format_diff, flatten_kube_lists, close_kernel, load_yaml
 from .render import pass_renderer
-from .api import ApiClient
+from .api.client import ApiClient
 
 
 def interleave(*iters):
