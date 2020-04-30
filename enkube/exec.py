@@ -18,7 +18,7 @@ import click
 
 from .util import flatten_kube_lists, format_json, close_kernel
 from .ctl import kubectl_popen
-from .api import ApiClient
+from .api.client import ApiClient
 from .main import pass_env
 
 

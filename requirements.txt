@@ -2,7 +2,7 @@ PyYAML
 asks
 click
 colorama
-curio
+curio==0.9
 deepdiff
 jinja2
 jsonnet

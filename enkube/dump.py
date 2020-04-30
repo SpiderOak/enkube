@@ -15,7 +15,7 @@
 import click
 
 from .util import format_yaml, close_kernel
-from .api import ApiClient
+from .api.client import ApiClient
 from .main import pass_env
 
 
