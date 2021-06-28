@@ -172,6 +172,10 @@ Kubernetes object prototypes
         local i = if std.objectHas(s.spec, "ingress") then s.spec.ingress else [],
         ingress: i + [rule { from: rule.peers }],
       } },
+      egress(rule):: self + { spec+: {
+      local i = if std.objectHas(s.spec, "egress") then s.spec.egress else [],
+      egress: i + [rule { to: rule.peers }],
+      } },
     },
 
   NetworkPolicyRule(peers):: {
