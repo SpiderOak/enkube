@@ -1,9 +1,10 @@
 PyYAML
-asks
+anyio==1.3.0
+asks==2.3.7
 click
 colorama
-curio
-deepdiff
+curio==0.9
+deepdiff==4.3.2
 jinja2
 jsonnet
 junit-xml
