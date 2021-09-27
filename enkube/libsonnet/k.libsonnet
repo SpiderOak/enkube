@@ -658,6 +658,27 @@ Kubernetes object prototypes
   _IngressBackend(serviceName, port):: { backend: { serviceName: serviceName, servicePort: port } },
 
   /*
+    IngressV1
+
+    Required arguments:
+      name: The name of the ingress.
+      class: The ingress class to use in the annotation.
+      spec: The IngressSpec for this ingress.
+
+    Optional arguments:
+      annotations: Additional annotations to add.
+  */
+  IngressV1(name, class, spec, annotations={}):: $._Object("networking.k8s.io/v1", "Ingress", name) {
+    metadata+: { annotations: annotations },
+    spec: spec + { ingressClassName: class },
+    assert std.objectHas(self.spec, "backend") || std.objectHas(self.spec, "rules") :
+           "Ingress must specify at least one of backend or rules",
+  },
+
+  _IngressBackendV1(serviceName, port):: { backend: { service: { name: serviceName, port: { number: port } } } },
+
+
+  /*
     IngressSpec
 
     Optional arguments:
@@ -672,6 +693,23 @@ Kubernetes object prototypes
       secretName: secretName,
     }] },
   },
+
+  /*
+    IngressSpecV1
+
+    Optional arguments:
+      rules: A list of IngressRules.
+  */
+  IngressSpecV1(rules=null):: {
+    local s = self,
+    backend_(serviceName, port):: self + $._IngressBackendV1(serviceName, port),
+    [if rules != null then "rules"]: rules,
+    tls_(secretName, hosts=null):: self + { tls: [{
+      hosts: if hosts == null then [r.host for r in s.rules] else hosts,
+      secretName: secretName,
+    }] },
+  },
+
 
   /*
     IngressRule
@@ -705,6 +743,39 @@ Kubernetes object prototypes
   },
 
   /*
+    IngressRuleV1
+
+    Required arguments:
+      host: The DNS hostname the rule applies to.
+  */
+  IngressRuleV1(host):: {
+    local r = self,
+    host: host,
+    http: { paths: [] },
+
+    /*
+      IngressRuleV1 backend helper
+
+      Adds a backend service to a rule, with an optional URL path. Can be
+      chained to add multiple backends to the same rule.
+
+      Required arguments:
+        serviceName: The name of the service to send requests to.
+        port: The port name or number to send requests to.
+
+      Optional arguments:
+        path: The URL path to "mount" the backend to.
+        pathType: Default emulates v1beta1 behavior
+    */
+    backend(serviceName, port, path=null, pathType="ImplemenationSpecifc"):: self + {
+      http+: { paths: r.http.paths + [
+        $._IngressBackendV1(serviceName, port) + if path == null then {} else { pathType: pathType, path: path },
+      ] },
+    },
+  },
+
+
+  /*
     HostIngress Helper
 
     Gives you a nicer interface for creating Ingresses.
@@ -733,6 +804,39 @@ Kubernetes object prototypes
       ] } },
       _domain:: self.spec.rules[0].host,
     },
+
+  /*
+    HostIngressV1 Helper
+
+    Gives you a nicer interface for creating Ingresses.
+
+    Required arguments:
+      name: The name of the Ingress.
+      hostname: The hostname the Ingress applies to.
+      class: The ingress class to use in the annotation.
+
+    Optional arguments:
+      tlsSecretName: Name of the secret containing TLS certificates.
+      annotations: Additional annotations to add.
+
+    Methods:
+      path: Add a backend to the Ingress at a given URL path.  Note:
+            default pathType ImplementationSpecific mimics old v1beta1
+            behavior.
+  */
+  HostIngressV1(name, hostname, class, tlsSecretName=null, annotations={})::
+    $.IngressV1(name, class, $.IngressSpecV1([$.IngressRuleV1(hostname)]) {
+      [if tlsSecretName != null then "tls"]: [{
+        secretName: tlsSecretName,
+      }],
+    }, annotations) {
+      local s = self,
+      path(path, serviceName, port, pathType="ImplementationSpecific"):: self + { spec+: { rules: [
+        s.spec.rules[0].backend(serviceName, port, path, pathType),
+      ] } },
+      _domain:: self.spec.rules[0].host,
+    },
+
 
   /*
     CustomResourceDefinition
