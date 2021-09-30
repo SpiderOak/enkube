@@ -614,8 +614,12 @@ Kubernetes object prototypes
       name: The name of the secret.
       cert: The certificate in PEM format.
       key: The private key in PEM format.
+
+    Optional arguments:
+      ca: The Ca certificate in PEM format.
   */
-  TLSSecret(name, cert, key):: $.Secret(name, {
+  TLSSecret(name, cert, key, ca=null):: $.Secret(name, {
+    [ if ca != null then "ca.crt" ]: ca,
     "tls.crt": cert,
     "tls.key": key,
   }, "kubernetes.io/tls"),
