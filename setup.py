@@ -38,6 +38,7 @@ setup(
             'yaml = enkube.render_plugins.util:Yaml',
             'render/jinja2 = enkube.render_plugins.jinja2:Renderer',
             'render/helm = enkube.render_plugins.helm:Helm',
+            'render/ctl = enkube.render_plugins.ctl:Ctl',
         ],
     },
     test_suite='enkube.test',
