@@ -407,7 +407,23 @@ Kubernetes object prototypes
   */
   StatefulSet(name, serviceName, labels, containers, initContainers=null)::
     $._Object("apps/v1", "StatefulSet", name).labels(labels) +
-    $._PodSpecTemplate(labels, containers, initContainers=initContainers) { spec+: { serviceName: serviceName } },
+    $._PodSpecTemplate(labels, containers, initContainers=initContainers) { spec+: { serviceName: serviceName } } +
+    {
+      volumeClaimTemplate(name, storage, accessModes=["ReadWriteOnce"], storageClassName=null):: self + {
+        spec+: {
+          volumeClaimTemplates+: [
+            {
+              metadata: { name: name },
+              spec: {
+                accessModes: accessModes,
+                resources: { requests: { storage: storage } },
+                [ if storageClassName != null then "storageClassName" ]: storageClassName,
+              },
+            },
+          ]
+        }
+      },
+    },
 
   /*
     Job
