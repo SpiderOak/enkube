@@ -26,7 +26,7 @@ from pygments import highlight, lexers, formatters
 
 import curio
 from curio.meta import (
-    curio_running, _from_coroutine, _isasyncgenfunction, finalize)
+    curio_running, from_coroutine, _isasyncgenfunction, finalize)
 from curio.monitor import Monitor
 
 
@@ -133,7 +133,7 @@ def sync_wrap(asyncfunc):
 
         @wraps(asyncfunc)
         def wrapped(*args, **kwargs):
-            if _from_coroutine() or curio_running():
+            if from_coroutine() or curio_running():
                 return asyncfunc(*args, **kwargs)
             else:
                 return _gen(*args, **kwargs)
@@ -141,7 +141,7 @@ def sync_wrap(asyncfunc):
     else:
         @wraps(asyncfunc)
         def wrapped(*args, **kwargs):
-            if _from_coroutine() or curio_running():
+            if from_coroutine() or curio_running():
                 return asyncfunc(*args, **kwargs)
             else:
                 return get_kernel().run(asyncfunc(*args, **kwargs))
@@ -150,12 +150,12 @@ def sync_wrap(asyncfunc):
     return wrapped
 
 
-class AsyncInstanceType(curio.meta.AsyncInstanceType):
-    __call__ = sync_wrap(curio.meta.AsyncInstanceType.__call__)
-
-
-class AsyncObject(metaclass=AsyncInstanceType):
-    pass
+#class AsyncInstanceType(curio.meta.AsyncInstanceType):
+#    __call__ = sync_wrap(curio.meta.AsyncInstanceType.__call__)
+#
+#
+#class AsyncObject(metaclass=AsyncInstanceType):
+#    pass
 
 
 class SyncIterWrapper:

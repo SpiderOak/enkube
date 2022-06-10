@@ -173,8 +173,8 @@ Kubernetes object prototypes
         ingress: i + [rule { from: rule.peers }],
       } },
       egress(rule):: self + { spec+: {
-      local i = if std.objectHas(s.spec, "egress") then s.spec.egress else [],
-      egress: i + [rule { to: rule.peers }],
+        local i = if std.objectHas(s.spec, "egress") then s.spec.egress else [],
+        egress: i + [rule { to: rule.peers }],
       } },
     },
 
@@ -417,11 +417,11 @@ Kubernetes object prototypes
               spec: {
                 accessModes: accessModes,
                 resources: { requests: { storage: storage } },
-                [ if storageClassName != null then "storageClassName" ]: storageClassName,
+                [if storageClassName != null then "storageClassName"]: storageClassName,
               },
             },
-          ]
-        }
+          ],
+        },
       },
     },
 
@@ -518,11 +518,11 @@ Kubernetes object prototypes
       },
 
       StorageClass(storageClassName):: self + {
-        spec+: { storageClassName: storageClassName, },
+        spec+: { storageClassName: storageClassName },
       },
 
       MountOptions(mountOptions):: self + {
-        spec+: { mountOptions: mountOptions, },
+        spec+: { mountOptions: mountOptions },
       },
 
       HostPath(node, path):: self + self.labels({ type: "local" }) + {
@@ -535,9 +535,9 @@ Kubernetes object prototypes
       },
 
       Nfs(server, path):: self + self.labels({ type: "nfs" }) + {
-        spec+: { nfs: { server: server, path: path, } },
+        spec+: { nfs: { server: server, path: path } },
       },
-      // TODO: Add more types than HostPath and NFS
+      # TODO: Add more types than HostPath and NFS
     },
 
   /*
@@ -562,11 +562,11 @@ Kubernetes object prototypes
       },
 
       StorageClass(storageClassName):: self + {
-        spec+: { storageClassName: storageClassName, },
+        spec+: { storageClassName: storageClassName },
       },
 
       Selector(selector):: self + {
-        spec+: { selector: selector }
+        spec+: { selector: selector },
       },
     },
 
@@ -639,7 +639,7 @@ Kubernetes object prototypes
       ca: The Ca certificate in PEM format.
   */
   TLSSecret(name, cert, key, ca=null):: $.Secret(name, {
-    [ if ca != null then "ca.crt" ]: ca,
+    [if ca != null then "ca.crt"]: ca,
     "tls.crt": cert,
     "tls.key": key,
   }, "kubernetes.io/tls"),
@@ -694,12 +694,19 @@ Kubernetes object prototypes
   */
   IngressV1(name, class, spec, annotations={}):: $._Object("networking.k8s.io/v1", "Ingress", name) {
     metadata+: { annotations: annotations },
-    spec: spec + { ingressClassName: class },
+    spec: spec { ingressClassName: class },
     assert std.objectHas(self.spec, "backend") || std.objectHas(self.spec, "rules") :
            "Ingress must specify at least one of backend or rules",
   },
 
-  _IngressBackendV1(serviceName, port):: { backend: { service: { name: serviceName, port: { number: port } } } },
+  _IngressBackendV1(serviceName, port):: {
+    backend: {
+      service: {
+        name: serviceName,
+        port: if std.isNumber(port) then { number: port } else { name: port },
+      },
+    },
+  },
 
 
   /*
