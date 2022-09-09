@@ -334,7 +334,7 @@ Changed Pod default/myapp
 
 ## Authors / Contributors
 
-* **David Hain** - *Initial work* - [dhain](https://github.com/dhain)
+* **Sadie Hain** - *Initial work* - [dhain](https://github.com/dhain)
 * **Robert Fairburn** - *Contributor* - [rfairburn](https://github.com/rfairburn)
 * **Josh Reichardt** - *Contributor* - [jmreicha](https://github.com/jmreicha)
 
